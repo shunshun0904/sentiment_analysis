@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.aws-sam/
+samconfig.toml
+# ローカル確認用に生成するサンプルデータ(tools/make_sample.py)
+web/data/
+.venv/
+node_modules/

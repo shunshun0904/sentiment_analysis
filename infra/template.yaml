@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: 株式市場センチメント可視化 — EventBridge + Lambda + S3
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: 履歴JSONとSPAを置くS3バケット名(グローバルで一意)
+  IndexId:
+    Type: String
+    Default: SPX
+  IndexName:
+    Type: String
+    Default: S&P 500
+  NewsQuery:
+    Type: String
+    Default: '"S&P 500" OR "Wall Street" OR "US stocks" OR "Federal Reserve"'
+  NewsLanguage:
+    Type: String
+    Default: en
+  ApiTubeKeyParam:
+    Type: String
+    Default: /market-sentiment/apitube-key
+    Description: APITubeキーを格納した SSM SecureString のパラメータ名
+  AnthropicKeyParam:
+    Type: String
+    Default: /market-sentiment/anthropic-key
+    Description: フェーズ2で使う Anthropic APIキーのパラメータ名(未使用でも可)
+  Scorer:
+    Type: String
+    Default: passthrough
+    AllowedValues: [passthrough, claude, dual]
+    Description: passthrough=API付属スコア / claude=Haiku 4.5 / dual=並走保存
+  ScheduleExpression:
+    Type: String
+    Default: rate(5 minutes)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 512
+    Timeout: 60
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        # SPAと公開JSONを静的ホスティングするため、パブリック読み取りを許可する。
+        # 独自ドメイン/HTTPSが必要なら CloudFront + OAC に差し替えること。
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ["*"]
+            AllowedHeaders: ["*"]
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-scoring-cache
+            Status: Enabled
+            Prefix: state/
+            ExpirationInDays: 7
+
+  PublicReadPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Statement:
+          # 公開するのは SPA と data/ 配下のみ。state/(記事キャッシュ)は非公開。
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource:
+              - !Sub "arn:aws:s3:::${BucketName}/index.html"
+              - !Sub "arn:aws:s3:::${BucketName}/data/*"
+
+  CollectorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../
+      Handler: src.handler.lambda_handler
+      Description: ニュース取得→重複排除→スコア化→S3更新
+      # 5分間隔の単一ジョブ。同時実行を1に固定してキャッシュの競合を防ぐ
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref BucketName
+          INDEX_ID: !Ref IndexId
+          INDEX_NAME: !Ref IndexName
+          NEWS_QUERY: !Ref NewsQuery
+          NEWS_LANGUAGE: !Ref NewsLanguage
+          NEWS_SOURCE: apitube
+          SCORER: !Ref Scorer
+          APITUBE_KEY_SSM_PARAM: !Ref ApiTubeKeyParam
+          ANTHROPIC_KEY_SSM_PARAM: !Ref AnthropicKeyParam
+          WINDOW_HOURS: "24"
+          HALF_LIFE_HOURS: "6"
+          UPDATE_INTERVAL_SECONDS: "300"
+          LOG_LEVEL: INFO
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref BucketName
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ApiTubeKeyParam}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}"
+      Events:
+        Tick:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref ScheduleExpression
+            Description: 5分間隔のセンチメント更新
+
+  # 失敗が続いたら気づけるようにしておく(無料枠内)
+  ErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: センチメント収集Lambdaが連続失敗
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CollectorFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  WebsiteURL:
+    Description: SPAのURL
+    Value: !GetAtt DataBucket.WebsiteURL
+  LatestJsonKey:
+    Description: SPAが5分ごとに取得するJSON
+    Value: !Sub "data/${IndexId}/latest.json"
+  FunctionName:
+    Value: !Ref CollectorFunction

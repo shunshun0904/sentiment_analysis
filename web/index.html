@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>市場センチメント</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:            #f9f9f7;
+    --surface:         #fcfcfb;
+    --text-primary:    #0b0b0b;
+    --text-secondary:  #52514e;
+    --text-muted:      #898781;
+    --grid:            #e1e0d9;
+    --axis:            #c3c2b7;
+    --border:          rgba(11, 11, 11, 0.10);
+    /* 発散パレット: 強気=青 / 弱気=赤 / 中立=グレー(緑赤は色覚多様性で判別困難なため不採用) */
+    --bull:            #2a78d6;
+    --bear:            #e34948;
+    --neutral:         #f0efec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:           #0d0d0d;
+      --surface:        #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --axis:           #383835;
+      --border:         rgba(255, 255, 255, 0.10);
+      --bull:           #3987e5;
+      --bear:           #e66767;
+      --neutral:        #383835;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface:        #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255, 255, 255, 0.10);
+    --bull:           #3987e5;
+    --bear:           #e66767;
+    --neutral:        #383835;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 64px;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 940px; margin: 0 auto; display: grid; gap: 16px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  h1 { font-size: 1.1rem; font-weight: 600; margin: 0; }
+  .meta { color: var(--text-muted); font-size: 0.8125rem; }
+  .meta strong { color: var(--text-secondary); font-weight: 500; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .card h2 {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+    letter-spacing: 0.02em;
+  }
+
+  /* --- 現在値 --- */
+  .gauge-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 28px; }
+  .hero { font-size: 3.25rem; font-weight: 600; line-height: 1.05; letter-spacing: -0.02em; }
+  .hero-label { font-size: 1.125rem; font-weight: 600; color: var(--text-secondary); padding-bottom: 6px; }
+  .stat { font-size: 0.8125rem; color: var(--text-muted); padding-bottom: 8px; }
+  .stat b { display: block; font-size: 1rem; font-weight: 600; color: var(--text-primary); }
+  .delta { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+
+  /* 発散メーター: 中央=0、塗りは符号側へ伸びる */
+  .meter { margin-top: 20px; }
+  .meter-track {
+    position: relative; height: 12px; border-radius: 6px;
+    background: var(--neutral); overflow: hidden;
+  }
+  .meter-fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; transition: all .4s ease; }
+  .meter-zero { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--axis); }
+  .meter-scale {
+    display: flex; justify-content: space-between;
+    font-size: 0.75rem; color: var(--text-muted);
+    font-variant-numeric: tabular-nums; margin-top: 6px;
+  }
+
+  /* --- チャート --- */
+  .chart-wrap { position: relative; }
+  svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0;
+    transform: translate(-50%, -100%); transition: opacity .12s;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-size: 0.8125rem;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .14); white-space: nowrap; z-index: 2;
+  }
+  .tooltip .t-time { color: var(--text-muted); font-size: 0.75rem; }
+  .tooltip .t-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* --- 記事リスト --- */
+  ol.articles { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .articles li { display: grid; grid-template-columns: 56px 1fr; gap: 12px; padding: 10px 0; border-top: 1px solid var(--grid); }
+  .articles li:first-child { border-top: 0; }
+  .a-score { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 0.875rem; display: flex; align-items: center; gap: 6px; }
+  .a-title { margin: 0; font-size: 0.9375rem; }
+  .a-title a { color: var(--text-primary); text-decoration: none; }
+  .a-title a:hover { text-decoration: underline; }
+  .a-meta { font-size: 0.75rem; color: var(--text-muted); }
+
+  details { margin-top: 12px; }
+  summary { cursor: pointer; font-size: 0.8125rem; color: var(--text-secondary); }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--grid); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-muted); font-weight: 500; }
+
+  .status { color: var(--text-muted); font-size: 0.875rem; }
+  .status[data-kind="error"] { color: var(--bear); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="index-name">市場センチメント</h1>
+    <span class="meta">
+      更新 <strong id="generated-at">—</strong> ／ 次回 <strong id="next-update">—</strong>
+    </span>
+  </header>
+
+  <p class="status" id="status" role="status" aria-live="polite">読み込み中…</p>
+
+  <section class="card" id="panel-now" hidden aria-labelledby="h-now">
+    <h2 id="h-now">現在のセンチメント</h2>
+    <div class="gauge-row">
+      <div class="hero" id="hero">—</div>
+      <div class="hero-label" id="hero-label"></div>
+      <div class="stat">前回比<b class="delta" id="delta">—</b></div>
+      <div class="stat">対象記事<b id="count">—</b></div>
+      <div class="stat">信頼度<b id="confidence">—</b></div>
+    </div>
+    <div class="meter">
+      <div class="meter-track">
+        <div class="meter-fill" id="meter-fill"></div>
+        <div class="meter-zero"></div>
+      </div>
+      <div class="meter-scale"><span>−1.0 弱気</span><span>0.0</span><span>強気 +1.0</span></div>
+    </div>
+  </section>
+
+  <section class="card" id="panel-chart" hidden aria-labelledby="h-chart">
+    <h2 id="h-chart">直近24時間の推移<span class="meta" id="chart-note"></span></h2>
+    <div class="chart-wrap" id="chart-wrap">
+      <svg id="chart" role="img" aria-labelledby="h-chart"></svg>
+      <div class="tooltip" id="tooltip" aria-hidden="true"></div>
+    </div>
+    <details>
+      <summary>数値で見る(表)</summary>
+      <table id="series-table">
+        <thead><tr><th>時刻</th><th>スコア</th><th>記事数</th><th>信頼度</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
+  </section>
+
+  <section class="card" id="panel-articles" hidden aria-labelledby="h-articles">
+    <h2 id="h-articles">根拠となった記事（寄与の大きい順）</h2>
+    <ol class="articles" id="articles"></ol>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const DATA_URL = new URLSearchParams(location.search).get("data") || "./data/SPX/latest.json";
+const SCHEMA_VERSION = 1;
+const $ = (id) => document.getElementById(id);
+
+let state = null;
+let pollTimer = null;
+
+// --- 表示ヘルパ ------------------------------------------------------------
+
+const fmtScore = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
+const fmtTime = (iso) =>
+  new Date(iso).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+const fmtDateTime = (iso) =>
+  new Date(iso).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+const sentimentColor = (v) =>
+  v > 0.02 ? "var(--bull)" : v < -0.02 ? "var(--bear)" : "var(--axis)";
+
+function setStatus(text, kind) {
+  const el = $("status");
+  el.textContent = text || "";
+  el.hidden = !text;
+  if (kind) el.dataset.kind = kind; else delete el.dataset.kind;
+}
+
+// --- データ取得 ------------------------------------------------------------
+
+async function load() {
+  try {
+    const res = await fetch(DATA_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    if (payload.schema_version !== SCHEMA_VERSION) {
+      setStatus("データ形式が更新されています。ページを再読み込みしてください。", "error");
+      return;
+    }
+    state = payload;
+    render();
+    setStatus("");
+    schedulePoll();
+  } catch (e) {
+    setStatus(`データを取得できませんでした（${e.message}）。次回更新時に再試行します。`, "error");
+    schedulePoll(60_000);
+  }
+}
+
+function schedulePoll(overrideMs) {
+  clearTimeout(pollTimer);
+  const interval = (state?.meta?.update_interval_seconds ?? 300) * 1000;
+  pollTimer = setTimeout(load, overrideMs ?? interval);
+}
+
+// タブを閉じている間の欠損は S3 の履歴が埋めるため、復帰時に取り直すだけでよい
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") load();
+});
+
+// --- 描画 ------------------------------------------------------------------
+
+function render() {
+  if (!state) return;
+  const s = state.sentiment;
+
+  document.title = `${fmtScore(s.score)} ${s.label} — ${state.index.name}`;
+  $("index-name").textContent = `${state.index.name} センチメント`;
+  $("generated-at").textContent = fmtTime(state.generated_at);
+  $("next-update").textContent = fmtTime(state.next_update_at);
+
+  $("hero").textContent = fmtScore(s.score);
+  $("hero").style.color = sentimentColor(s.score);
+  $("hero-label").textContent = s.label;
+
+  const delta = $("delta");
+  delta.replaceChildren();
+  if (s.delta === null || s.delta === undefined) {
+    delta.textContent = "—";
+  } else {
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = sentimentColor(s.delta);
+    delta.append(dot, document.createTextNode(fmtScore(s.delta)));
+  }
+
+  $("count").textContent = `${s.article_count}件`;
+  $("confidence").textContent = `${Math.round(s.confidence * 100)}%`;
+
+  const fill = $("meter-fill");
+  const half = Math.min(Math.abs(s.score), 1) * 50;
+  fill.style.background = sentimentColor(s.score);
+  if (s.score >= 0) {
+    fill.style.left = "50%";
+    fill.style.right = `${50 - half}%`;
+  } else {
+    fill.style.left = `${50 - half}%`;
+    fill.style.right = "50%";
+  }
+
+  $("chart-note").textContent = ` ・半減期${state.meta.half_life_hours}時間の加重平均`;
+
+  // 描画前にパネルを表示する。hidden のままだと幅が0になり、
+  // チャートが誤ったスケールで描かれる
+  for (const id of ["panel-now", "panel-chart", "panel-articles"]) $(id).hidden = false;
+
+  drawChart();
+  renderTable();
+  renderArticles();
+}
+
+// --- 時系列チャート ---------------------------------------------------------
+
+const NS = "http://www.w3.org/2000/svg";
+const PAD = { top: 16, right: 16, bottom: 26, left: 40 };
+const el = (name, attrs) => {
+  const node = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+};
+
+function yDomain(values) {
+  // 0 を必ず含み、最小幅 0.4 を確保する(平坦な線が拡大されて見えないように)
+  const max = Math.max(0.2, ...values.map(Math.abs));
+  const span = Math.min(1, Math.ceil(max * 10) / 10);
+  return [-span, span];
+}
+
+function drawChart() {
+  const svg = $("chart");
+  const points = (state.series || []).filter((p) => Number.isFinite(p.score));
+  svg.replaceChildren();
+  if (points.length < 2) return;
+
+  const width = Math.max(320, $("chart-wrap").clientWidth);
+  const height = Math.max(180, Math.min(260, Math.round(width * 0.32)));
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("height", height);
+
+  const t0 = Date.parse(points[0].t);
+  const t1 = Date.parse(points[points.length - 1].t) || t0 + 1;
+  const [lo, hi] = yDomain(points.map((p) => p.score));
+  const innerW = width - PAD.left - PAD.right;
+  const innerH = height - PAD.top - PAD.bottom;
+  const x = (t) => PAD.left + ((Date.parse(t) - t0) / Math.max(1, t1 - t0)) * innerW;
+  const y = (v) => PAD.top + ((hi - v) / (hi - lo)) * innerH;
+  const yZero = y(0);
+
+  // 発散グラデーション: 0 より上は強気色、下は弱気色
+  const stop = ((yZero - PAD.top) / innerH) * 100;
+  const defs = el("defs", {});
+  const grad = el("linearGradient", { id: "sign", x1: "0", y1: "0", x2: "0", y2: "1" });
+  for (const [offset, color] of [[0, "--bull"], [stop, "--bull"], [stop, "--bear"], [100, "--bear"]]) {
+    grad.appendChild(el("stop", { offset: `${offset}%`, "stop-color": `var(${color})` }));
+  }
+  defs.appendChild(grad);
+  svg.appendChild(defs);
+
+  // 目盛り(ヘアライン・実線・控えめ)
+  for (const v of [hi, hi / 2, 0, lo / 2, lo]) {
+    const isZero = v === 0;
+    svg.appendChild(el("line", {
+      x1: PAD.left, x2: width - PAD.right, y1: y(v), y2: y(v),
+      stroke: isZero ? "var(--axis)" : "var(--grid)", "stroke-width": 1,
+    }));
+    const label = el("text", {
+      x: PAD.left - 8, y: y(v) + 4, "text-anchor": "end",
+      fill: "var(--text-muted)", "font-size": 11,
+    });
+    label.textContent = v.toFixed(1);
+    svg.appendChild(label);
+  }
+
+  const line = points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.score).toFixed(1)}`).join("");
+  svg.appendChild(el("path", {
+    d: `${line}L${x(points.at(-1).t).toFixed(1)},${yZero}L${x(points[0].t).toFixed(1)},${yZero}Z`,
+    fill: "url(#sign)", "fill-opacity": 0.1, stroke: "none",
+  }));
+  svg.appendChild(el("path", {
+    d: line, fill: "none", stroke: "url(#sign)",
+    "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
+  }));
+
+  // 時刻ラベル(両端 + 中央)
+  for (const p of [points[0], points[Math.floor(points.length / 2)], points.at(-1)]) {
+    const anchor = p === points[0] ? "start" : p === points.at(-1) ? "end" : "middle";
+    const label = el("text", {
+      x: x(p.t), y: height - 8, "text-anchor": anchor,
+      fill: "var(--text-muted)", "font-size": 11,
+    });
+    label.textContent = fmtTime(p.t);
+    svg.appendChild(label);
+  }
+
+  // 現在値のマーカー(サーフェス色のリングで背景から浮かせる)
+  const last = points.at(-1);
+  svg.appendChild(el("circle", {
+    cx: x(last.t), cy: y(last.score), r: 5,
+    fill: sentimentColor(last.score), stroke: "var(--surface)", "stroke-width": 2,
+  }));
+
+  attachHover(svg, points, { x, y, width, height, innerH });
+}
+
+function attachHover(svg, points, geo) {
+  const tooltip = $("tooltip");
+  const crosshair = el("line", {
+    y1: PAD.top, y2: PAD.top + geo.innerH, stroke: "var(--axis)",
+    "stroke-width": 1, opacity: 0,
+  });
+  const focus = el("circle", {
+    r: 4, fill: "var(--text-primary)", stroke: "var(--surface)", "stroke-width": 2, opacity: 0,
+  });
+  svg.append(crosshair, focus);
+
+  const overlay = el("rect", {
+    x: 0, y: 0, width: geo.width, height: geo.height, fill: "transparent",
+  });
+  svg.appendChild(overlay);
+
+  const hide = () => {
+    tooltip.style.opacity = 0;
+    crosshair.setAttribute("opacity", 0);
+    focus.setAttribute("opacity", 0);
+  };
+
+  overlay.addEventListener("pointermove", (event) => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((event.clientX - rect.left) / rect.width) * geo.width;
+    let nearest = points[0];
+    for (const p of points) {
+      if (Math.abs(geo.x(p.t) - px) < Math.abs(geo.x(nearest.t) - px)) nearest = p;
+    }
+    const cx = geo.x(nearest.t);
+    const cy = geo.y(nearest.score);
+    crosshair.setAttribute("x1", cx);
+    crosshair.setAttribute("x2", cx);
+    crosshair.setAttribute("opacity", 1);
+    focus.setAttribute("cx", cx);
+    focus.setAttribute("cy", cy);
+    focus.setAttribute("opacity", 1);
+
+    tooltip.replaceChildren();
+    const time = document.createElement("div");
+    time.className = "t-time";
+    time.textContent = `${fmtDateTime(nearest.t)}・${nearest.n}件`;
+    const value = document.createElement("div");
+    value.className = "t-val";
+    value.textContent = fmtScore(nearest.score);
+    value.style.color = sentimentColor(nearest.score);
+    tooltip.append(time, value);
+    tooltip.style.left = `${(cx / geo.width) * 100}%`;
+    tooltip.style.top = `${cy - 12}px`;
+    tooltip.style.opacity = 1;
+  });
+  overlay.addEventListener("pointerleave", hide);
+}
+
+// --- 表・記事 --------------------------------------------------------------
+
+function renderTable() {
+  const body = $("series-table").querySelector("tbody");
+  body.replaceChildren();
+  // 表は読めることが目的なので15分刻みに間引く
+  for (const p of (state.series || []).filter((_, i, arr) => i % 3 === 0 || i === arr.length - 1)) {
+    const row = document.createElement("tr");
+    for (const text of [fmtDateTime(p.t), fmtScore(p.score), String(p.n), `${Math.round(p.confidence * 100)}%`]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.appendChild(cell);
+    }
+    body.appendChild(row);
+  }
+}
+
+function renderArticles() {
+  const list = $("articles");
+  list.replaceChildren();
+  for (const article of state.articles || []) {
+    const item = document.createElement("li");
+
+    const score = document.createElement("div");
+    score.className = "a-score";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = sentimentColor(article.score);
+    const value = document.createElement("span");
+    value.textContent = fmtScore(article.score);
+    score.append(dot, value);
+
+    const body = document.createElement("div");
+    const title = document.createElement("p");
+    title.className = "a-title";
+    if (article.url) {
+      const link = document.createElement("a");
+      link.href = article.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = article.title;
+      title.appendChild(link);
+    } else {
+      title.textContent = article.title;
+    }
+    const meta = document.createElement("p");
+    meta.className = "a-meta";
+    meta.textContent = `${article.source}・${fmtDateTime(article.published_at)}・寄与度 ${article.weight.toFixed(2)}`;
+    body.append(title, meta);
+
+    item.append(score, body);
+    list.appendChild(item);
+  }
+}
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(drawChart, 150);
+});
+
+load();
+</script>
+</body>
+</html>
