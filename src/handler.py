@@ -62,6 +62,46 @@ def _append_history(store: S3Store, cfg: config.Config, point: SentimentPoint) -
     store.put_json(key, payload, max_age=300)
 
 
+def _rollup_previous_day(store: S3Store, cfg: config.Config, now: datetime) -> None:
+    """前日ぶんの履歴を1日1点に要約して `daily.json` に追記する。
+
+    5分刻みの生の履歴は1日288点あり、1年で10万点を超える。長期の推移を見るのに
+    その粒度は要らないので、日次に畳んでおく。こうしておけば
+    ライフサイクルで生の履歴を消しても、長い目盛りの推移は残る。
+    """
+    day = (now - timedelta(days=1)).date().isoformat()
+    payload = store.get_json(cfg.key_daily(), default=None) or {
+        "schema_version": SCHEMA_VERSION,
+        "index": cfg.index_id,
+        "days": [],
+    }
+    if any(d.get("d") == day for d in payload["days"]):
+        return  # すでに畳んである
+
+    history = store.get_json(cfg.key_history(day), default=None)
+    if not history or not history.get("points"):
+        return  # その日の記録が無い(初日・停止していた日)
+
+    points = sorted(history["points"], key=lambda p: p["t"])
+    scores = [float(p["score"]) for p in points]
+    counts = [int(p.get("n", 0)) for p in points]
+    payload["days"].append(
+        {
+            "d": day,
+            "open": round(scores[0], 4),
+            "close": round(scores[-1], 4),
+            "avg": round(sum(scores) / len(scores), 4),
+            "min": round(min(scores), 4),
+            "max": round(max(scores), 4),
+            "points": len(points),
+            "articles_avg": round(sum(counts) / len(counts), 1) if counts else 0.0,
+        }
+    )
+    payload["days"].sort(key=lambda d: d["d"])
+    store.put_json(cfg.key_daily(), payload, max_age=3600)
+    log.info("%s を日次に畳みました (%d点)", day, len(points))
+
+
 def _article_view(article: Article, weight: float) -> dict[str, Any]:
     return {
         "id": article.id,
@@ -146,6 +186,7 @@ def run(cfg: config.Config | None = None, *, now: datetime | None = None, store:
         series.append(point)
 
     _append_history(store, cfg, point)
+    _rollup_previous_day(store, cfg, now)
 
     # 5. 公開データ --------------------------------------------------------
     previous = series[-2] if len(series) >= 2 else None

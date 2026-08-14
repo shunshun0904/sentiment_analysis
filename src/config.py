@@ -106,6 +106,10 @@ class Config:
     def key_history(self, date_str: str) -> str:
         return f"{self.prefix}data/{self.index_id}/history/{date_str}.json"
 
+    def key_daily(self) -> str:
+        """日次に畳んだ長期の推移。生の履歴を消しても、ここは残す。"""
+        return f"{self.prefix}data/{self.index_id}/daily.json"
+
     def key_cache(self) -> str:
         return f"{self.prefix}state/{self.index_id}/articles.json"
 

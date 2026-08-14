@@ -34,6 +34,19 @@ Parameters:
   ScheduleExpression:
     Type: String
     Default: rate(5 minutes)
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+    Description: >-
+      JSONの取得を許すオリジン。ホームページから読むだけなら
+      https://shunshun0904.github.io に絞れる。
+  HistoryRetentionDays:
+    Type: Number
+    Default: 400
+    MinValue: 2
+    Description: >-
+      5分刻みの生の履歴を残す日数。過ぎたぶんは自動削除される。
+      長期の推移は daily.json に1日1点で畳んであるので、消えるのは細かさだけ。
 
 Globals:
   Function:
@@ -61,15 +74,27 @@ Resources:
       CorsConfiguration:
         CorsRules:
           - AllowedMethods: [GET, HEAD]
-            AllowedOrigins: ["*"]
+            AllowedOrigins: [!Ref AllowedOrigin]
             AllowedHeaders: ["*"]
             MaxAge: 3600
       LifecycleConfiguration:
         Rules:
+          # 記事キャッシュ。消えても次の実行で取り直すだけなので短く
           - Id: expire-scoring-cache
             Status: Enabled
             Prefix: state/
             ExpirationInDays: 7
+          # 5分刻みの生の履歴。日次(daily.json)に畳んだあとは細かさだけの価値なので、
+          # ここで自動的に打ち止めにする。daily.json と latest.json はこの規則に触れない。
+          - Id: expire-raw-history
+            Status: Enabled
+            Prefix: !Sub "data/${IndexId}/history/"
+            ExpirationInDays: !Ref HistoryRetentionDays
+          # 書き損じ(マルチパートの残骸)を溜めない
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 3
 
   PublicReadPolicy:
     Type: AWS::S3::BucketPolicy
@@ -88,6 +113,7 @@ Resources:
   CollectorFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${AWS::StackName}-collector"
       CodeUri: ../
       Handler: src.handler.lambda_handler
       Description: ニュース取得→重複排除→スコア化→S3更新
@@ -124,6 +150,13 @@ Resources:
             Schedule: !Ref ScheduleExpression
             Description: 5分間隔のセンチメント更新
 
+  # ログは放っておくと無期限に残る。14日で足りる(障害の調査はその場でやる)
+  CollectorLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-collector"
+      RetentionInDays: 14
+
   # 失敗が続いたら気づけるようにしておく(無料枠内)
   ErrorAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -145,8 +178,11 @@ Outputs:
   WebsiteURL:
     Description: SPAのURL
     Value: !GetAtt DataBucket.WebsiteURL
-  LatestJsonKey:
-    Description: SPAが5分ごとに取得するJSON
-    Value: !Sub "data/${IndexId}/latest.json"
+  LatestJsonURL:
+    Description: ホームページ側の data/sentiment.js に書くURL
+    Value: !Sub "https://${BucketName}.s3.${AWS::Region}.amazonaws.com/data/${IndexId}/latest.json"
+  DailyJsonURL:
+    Description: 日次に畳んだ長期の推移(生の履歴を消しても残る)
+    Value: !Sub "https://${BucketName}.s3.${AWS::Region}.amazonaws.com/data/${IndexId}/daily.json"
   FunctionName:
     Value: !Ref CollectorFunction

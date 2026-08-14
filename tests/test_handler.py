@@ -165,6 +165,40 @@ def test_stale_articles_are_pruned_from_cache(monkeypatch, cfg, store):
     assert set(store.objects[cfg.key_cache()]["articles"]) == {"new"}
 
 
+def test_previous_day_is_rolled_up_into_daily(monkeypatch, cfg, store):
+    source = FakeSource([make("a", 0.6, 0)])
+    # 前日に2回動かして履歴を作る
+    run(monkeypatch, cfg, store, source, now=NOW - timedelta(days=1))
+    source.articles = [make("b", -0.4, 0)]
+    source.articles[0].published_at = NOW - timedelta(days=1)
+    run(monkeypatch, cfg, store, source, now=NOW - timedelta(days=1, minutes=-5))
+
+    # 翌日に動かすと、前日ぶんが1点に畳まれる
+    source.articles = [make("c", 0.2, 0)]
+    run(monkeypatch, cfg, store, source, now=NOW)
+
+    days = store.objects[cfg.key_daily()]["days"]
+    assert [d["d"] for d in days] == ["2026-08-13"]
+    day = days[0]
+    assert day["points"] == 2
+    assert day["min"] <= day["avg"] <= day["max"]
+    assert "open" in day and "close" in day
+
+
+def test_rollup_is_idempotent(monkeypatch, cfg, store):
+    source = FakeSource([make("a", 0.6, 0)])
+    run(monkeypatch, cfg, store, source, now=NOW - timedelta(days=1))
+    run(monkeypatch, cfg, store, source, now=NOW)
+    run(monkeypatch, cfg, store, source, now=NOW + timedelta(minutes=5))
+    assert len(store.objects[cfg.key_daily()]["days"]) == 1
+
+
+def test_rollup_skips_days_with_no_history(monkeypatch, cfg, store):
+    run(monkeypatch, cfg, store, FakeSource([make("a", 0.6, 0)]), now=NOW)
+    # 前日は動かしていないので、日次には何も入らない(空の日を作らない)
+    assert cfg.key_daily() not in store.objects
+
+
 def test_meta_reports_scorer_and_counts(monkeypatch, cfg, store):
     payload = run(monkeypatch, cfg, store, FakeSource([make("a", 0.5, 0)]))
     assert payload["meta"]["scorer"] == "passthrough"
