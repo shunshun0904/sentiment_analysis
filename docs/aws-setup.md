@@ -10,7 +10,7 @@
 | もの | 取り方 | 費用 |
 |---|---|---|
 | AWSアカウント | <https://aws.amazon.com/jp/> | 無料(登録にクレジットカードは要る) |
-| APITube の鍵 | <https://apitube.io/> で登録 → ダッシュボードの API key | 無料枠あり（**日次上限は要確認**。100/日と1,000/日の記載が混在） |
+| APITube の鍵 | <https://apitube.io/> で登録 → ダッシュボードの API key | 無料枠あり（ベンダー各ページの記載は**1,000クレジット/日**・00:00 UTC リセット。ダッシュボードで要確認） |
 | Anthropic の鍵 | フェーズ2に進むときだけ。<https://console.anthropic.com/> | 従量(月150〜300円想定) |
 
 APITubeの鍵は先に取ってください。**取ったら、AWSに触る前に実測します**
@@ -164,6 +164,7 @@ aws s3 ls s3://shun-market-sentiment/data/SPX/ --recursive --human-readable --su
 | `sam deploy` が BucketAlreadyExists で落ちる | バケット名は世界で一意。別の名前にする |
 | Lambdaは成功しているのに `latest.json` が無い | リージョン違いのバケットを見ている。コンソール右上を確認 |
 | ログに `APITUBE_KEY を設定してください` | SSMのパラメータ名がテンプレートの `ApiTubeKeyParam` と食い違っている |
-| ログに `HTTP 429` | APITubeの日次上限を使い切った。`ScheduleExpression` を延ばす（15分間隔なら96回/日） |
+| ログに `HTTP 429` | APITubeの日次上限を使い切った。`MAX_PAGES` を減らすか `ScheduleExpression` を延ばす（15分間隔なら96回/日） |
+| 枠の減りが読めない | `latest.json` の `meta.api_quota` に毎回の残枠が記録されている。数日ぶん見れば実際の上限が分かる |
 
 料金の内訳と、過去データをどう畳むかは `docs/cost.md` にあります。

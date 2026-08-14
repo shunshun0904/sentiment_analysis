@@ -212,6 +212,10 @@ def run(cfg: config.Config | None = None, *, now: datetime | None = None, store:
             "update_interval_seconds": cfg.update_interval_seconds,
             "fetched": len(fetched),
             "new_scored": len(scored),
+            # 無料枠の日次上限が資料で確定できないので、提供者が返す残枠を毎回記録する。
+            # 数日ぶんの latest.json を見れば、実際の上限と消費ペースが分かる。
+            "api_requests": getattr(source, "requests", None),
+            "api_quota": getattr(source, "quota", None) or None,
         },
     }
     store.put_json(cfg.key_latest(), payload, max_age=60)

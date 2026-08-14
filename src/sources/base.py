@@ -33,10 +33,12 @@ def http_get_json(
     params: dict[str, Any],
     timeout: float = 15.0,
     headers: dict[str, str] | None = None,
+    headers_out: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """依存ゼロのGETヘルパ。Lambdaに追加パッケージを持ち込まないため urllib を使う。
 
     鍵はクエリではなくヘッダで渡す(アクセスログやリファラに残さないため)。
+    `headers_out` を渡すと、レスポンスヘッダ(残枠など)をそこに書き戻す。
     """
     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
     all_headers = {"Accept": "application/json", "User-Agent": "market-sentiment/1.0"}
@@ -44,6 +46,8 @@ def http_get_json(
     req = urllib.request.Request(f"{url}?{qs}", headers=all_headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if headers_out is not None:
+                headers_out.update({k.lower(): v for k, v in resp.headers.items()})
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:500]

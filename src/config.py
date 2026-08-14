@@ -51,6 +51,8 @@ class Config:
     )
     #: 1回の取得で読む最大記事数(無料枠のリクエスト数を意識して控えめに)
     fetch_limit: int = field(default_factory=lambda: _i("FETCH_LIMIT", 100))
+    #: 1回の更新で繰るページ数の上限。日次のリクエスト上限を守る最後の砦
+    max_pages: int = field(default_factory=lambda: _i("MAX_PAGES", 3))
 
     # --- スコア算出 ---
     #: "passthrough"(API付属スコア) / "claude"(Haiku 4.5) / "dual"(並走保存)

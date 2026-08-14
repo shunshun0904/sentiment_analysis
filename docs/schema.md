@@ -52,7 +52,11 @@
     "half_life_hours": 6,
     "update_interval_seconds": 300,
     "fetched": 62,           // API取得件数
-    "new_scored": 7          // うち新規にスコア化した件数(= LLMコストの目安)
+    "new_scored": 7,         // うち新規にスコア化した件数(= LLMコストの目安)
+    "api_requests": 2,       // この更新で投げたリクエスト数(ページ繰りを含む)
+    "api_quota": {           // 提供者が返した残枠。無ければ null
+      "x-ratelimit-remaining": "873"
+    }
   }
 }
 ```

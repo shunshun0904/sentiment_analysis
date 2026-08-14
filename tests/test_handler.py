@@ -205,3 +205,17 @@ def test_meta_reports_scorer_and_counts(monkeypatch, cfg, store):
     assert payload["meta"]["source"] == "fake"
     assert payload["meta"]["fetched"] == 1
     assert payload["meta"]["new_scored"] == 1
+
+
+def test_meta_carries_observed_api_quota(monkeypatch, cfg, store):
+    """残枠を返さないソースでも落ちず、返すソースでは meta に載ること。"""
+    plain = FakeSource([make("a", 0.5, 0)])
+    payload = run(monkeypatch, cfg, store, plain)
+    assert payload["meta"]["api_quota"] is None
+
+    metered = FakeSource([make("b", 0.5, 0)])
+    metered.quota = {"x-ratelimit-remaining": "873"}
+    metered.requests = 2
+    payload = run(monkeypatch, cfg, store, metered, now=NOW + timedelta(minutes=5))
+    assert payload["meta"]["api_quota"] == {"x-ratelimit-remaining": "873"}
+    assert payload["meta"]["api_requests"] == 2

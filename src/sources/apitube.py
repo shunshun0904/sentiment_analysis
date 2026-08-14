@@ -107,6 +107,19 @@ def to_article(item: dict[str, Any]) -> Article | None:
     )
 
 
+#: 残枠を知らせるヘッダは提供者によって名前が違う。それらしいものを拾って記録する
+_QUOTA_HINTS = ("ratelimit", "rate-limit", "quota", "credit", "retry-after")
+
+
+def quota_of(headers: dict[str, str]) -> dict[str, str]:
+    """レスポンスヘッダから残枠に関する行だけ抜き出す。
+
+    無料枠の日次上限が資料によって食い違っていて確定できないため、
+    **本番で毎回この値を記録して実測に代える**。latest.json の meta に載る。
+    """
+    return {k: v for k, v in headers.items() if any(h in k for h in _QUOTA_HINTS)}
+
+
 class APITubeSource(NewsSource):
     name = "apitube"
 
@@ -115,6 +128,10 @@ class APITubeSource(NewsSource):
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
+        #: 直近のレスポンスで見えた残枠。handler が meta に載せる
+        self.quota: dict[str, str] = {}
+        #: この実行で実際に投げたリクエスト数
+        self.requests = 0
 
     def fetch(self, since: datetime, limit: int) -> list[Article]:
         key = self.cfg.resolve_apitube_key()
@@ -122,7 +139,8 @@ class APITubeSource(NewsSource):
         seen: set[str] = set()
 
         page = 1
-        while len(articles) < limit and page <= 5:  # 暴走防止に5ページで打ち止め
+        while len(articles) < limit and page <= self.cfg.max_pages:
+            seen_headers: dict[str, str] = {}
             payload = http_get_json(
                 ENDPOINT,
                 {
@@ -135,7 +153,10 @@ class APITubeSource(NewsSource):
                     "page": page,
                 },
                 headers={"X-API-Key": key},
+                headers_out=seen_headers,
             )
+            self.requests += 1
+            self.quota = quota_of(seen_headers) or self.quota
             batch = list(results_of(payload))
             if not batch:
                 break

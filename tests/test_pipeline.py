@@ -228,8 +228,10 @@ def test_fetch_pages_until_limit(monkeypatch):
     """has_next_pages が立っているあいだページを繰り、limit で止まること。"""
     calls: list[dict] = []
 
-    def fake_get(url, params, timeout=15.0, headers=None):
+    def fake_get(url, params, timeout=15.0, headers=None, headers_out=None):
         calls.append({"params": params, "headers": headers})
+        if headers_out is not None:
+            headers_out.update({"x-ratelimit-remaining": "873", "content-type": "application/json"})
         page = params["page"]
         if page > 3:
             return {"results": [], "has_next_pages": False}
@@ -258,8 +260,49 @@ def test_fetch_pages_until_limit(monkeypatch):
     assert "api_key" not in calls[0]["params"]
 
 
+def test_quota_headers_are_recorded_for_meta(monkeypatch):
+    """日次上限が資料で確定できないので、実測値をレスポンスヘッダから拾って残す。"""
+    def fake_get(url, params, timeout=15.0, headers=None, headers_out=None):
+        if headers_out is not None:
+            headers_out.update({
+                "x-ratelimit-limit": "1000",
+                "x-ratelimit-remaining": "873",
+                "content-type": "application/json",  # これは残枠と無関係なので落とす
+            })
+        return {"results": [], "has_next_pages": False}
+
+    monkeypatch.setattr(apitube, "http_get_json", fake_get)
+    source = apitube.APITubeSource(Config(apitube_key="k"))
+    source.fetch(since=NOW, limit=10)
+
+    assert source.quota == {"x-ratelimit-limit": "1000", "x-ratelimit-remaining": "873"}
+    assert source.requests == 1
+
+
+def test_pagination_is_capped_by_max_pages(monkeypatch):
+    """日次のリクエスト上限を守る最後の砦。has_next_pages が立ち続けても止まる。"""
+    pages: list[int] = []
+
+    def fake_get(url, params, timeout=15.0, headers=None, headers_out=None):
+        pages.append(params["page"])
+        return {
+            "results": [{
+                "title": f"h{params['page']}", "href": f"https://example.com/{params['page']}",
+                "published_at": "2026-08-14T11:00:00Z", "source": {"domain": "example.com"},
+                "sentiment": {"overall": {"score": 0.1}},
+            }],
+            "has_next_pages": True,  # 際限なく「次がある」と言い続ける
+        }
+
+    monkeypatch.setattr(apitube, "http_get_json", fake_get)
+    source = apitube.APITubeSource(Config(apitube_key="k", max_pages=2))
+    source.fetch(since=NOW, limit=100)
+    assert pages == [1, 2]
+    assert source.requests == 2
+
+
 def test_fetch_stops_when_no_next_page(monkeypatch):
-    def fake_get(url, params, timeout=15.0, headers=None):
+    def fake_get(url, params, timeout=15.0, headers=None, headers_out=None):
         return {
             "results": [{
                 "title": "only one", "href": "https://example.com/1",
