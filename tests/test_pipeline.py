@@ -15,6 +15,7 @@ from src import aggregate, dedupe  # noqa: E402
 from src.config import Config  # noqa: E402
 from src.models import Article, canonical_id  # noqa: E402
 from src.scoring.passthrough import PassthroughScorer  # noqa: E402
+from src.sources import apitube  # noqa: E402
 from src.sources.apitube import to_article  # noqa: E402
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
@@ -189,6 +190,88 @@ def test_passthrough_leaves_unscored_alone():
 
 
 # --- APITube マッピング ---------------------------------------------------
+
+
+#: APITube のドキュメントに載っているレスポンス例そのまま(実物では未検証)
+DOC_EXAMPLE = {
+    "results": [
+        {
+            "title": "Nvidia tops Q1 earnings as data-center revenue jumps",
+            "description": "Chipmaker beats analyst estimates...",
+            "href": "https://example.com/nvidia-q1",
+            "published_at": "2026-05-03T08:14:22.000Z",
+            "language": {"code": "en"},
+            "source": {"domain": "reuters.com"},
+            "categories": [{"id": "medtop:13000000", "name": "Technology", "score": 0.94}],
+            "sentiment": {"overall": {"score": 0.41, "polarity": "positive"}},
+        }
+    ],
+    "has_next_pages": True,
+}
+
+
+def test_documented_response_example_maps_cleanly():
+    items = list(apitube.results_of(DOC_EXAMPLE))
+    assert len(items) == 1
+    article = apitube.to_article(items[0])
+    assert article is not None
+    assert article.score == 0.41
+    assert article.source == "reuters.com"
+    # language は {"code": ...} なので、辞書のまま入れてはいけない
+    assert article.language == "en"
+    assert article.published_at == datetime(2026, 5, 3, 8, 14, 22, tzinfo=timezone.utc)
+    # ドキュメントの例に id が無いので、URLから作る
+    assert article.id == canonical_id("https://example.com/nvidia-q1", article.title)
+
+
+def test_fetch_pages_until_limit(monkeypatch):
+    """has_next_pages が立っているあいだページを繰り、limit で止まること。"""
+    calls: list[dict] = []
+
+    def fake_get(url, params, timeout=15.0, headers=None):
+        calls.append({"params": params, "headers": headers})
+        page = params["page"]
+        if page > 3:
+            return {"results": [], "has_next_pages": False}
+        return {
+            "results": [
+                {
+                    "title": f"headline {page}-{i}",
+                    "href": f"https://example.com/{page}/{i}",
+                    "published_at": "2026-08-14T11:00:00Z",
+                    "source": {"domain": "example.com"},
+                    "sentiment": {"overall": {"score": 0.1, "polarity": "neutral"}},
+                }
+                for i in range(2)
+            ],
+            "has_next_pages": True,
+        }
+
+    monkeypatch.setattr(apitube, "http_get_json", fake_get)
+    cfg = Config(apitube_key="k", query="q", language="en")
+    got = apitube.APITubeSource(cfg).fetch(since=NOW - timedelta(hours=24), limit=5)
+
+    assert len(got) == 5
+    assert [c["params"]["page"] for c in calls] == [1, 2, 3]
+    # 鍵はヘッダで渡す。クエリ文字列には出さない
+    assert calls[0]["headers"] == {"X-API-Key": "k"}
+    assert "api_key" not in calls[0]["params"]
+
+
+def test_fetch_stops_when_no_next_page(monkeypatch):
+    def fake_get(url, params, timeout=15.0, headers=None):
+        return {
+            "results": [{
+                "title": "only one", "href": "https://example.com/1",
+                "published_at": "2026-08-14T11:00:00Z", "source": {"domain": "example.com"},
+                "sentiment": {"overall": {"score": 0.2}},
+            }],
+            "has_next_pages": False,
+        }
+
+    monkeypatch.setattr(apitube, "http_get_json", fake_get)
+    cfg = Config(apitube_key="k")
+    assert len(apitube.APITubeSource(cfg).fetch(since=NOW, limit=50)) == 1
 
 
 def test_to_article_maps_nested_sentiment():

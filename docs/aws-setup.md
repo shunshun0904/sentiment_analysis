@@ -10,18 +10,27 @@
 | もの | 取り方 | 費用 |
 |---|---|---|
 | AWSアカウント | <https://aws.amazon.com/jp/> | 無料(登録にクレジットカードは要る) |
-| APITube の鍵 | <https://apitube.io/> で登録 → ダッシュボードの API key | 無料枠 1,000リクエスト/日 |
+| APITube の鍵 | <https://apitube.io/> で登録 → ダッシュボードの API key | 無料枠あり（**日次上限は要確認**。100/日と1,000/日の記載が混在） |
 | Anthropic の鍵 | フェーズ2に進むときだけ。<https://console.anthropic.com/> | 従量(月150〜300円想定) |
 
-APITubeの鍵は先に取ってください。**取ったら、まずレスポンスの形を実測します**
-(15分ほど、AWSは不要):
+APITubeの鍵は先に取ってください。**取ったら、AWSに触る前に実測します**
+(5分、AWSは不要):
 
 ```bash
 APITUBE_KEY=xxxx python3 tools/probe_apitube.py
 ```
 
-ここでスコアが付いて返ってくるか確認します。付かなければ、フェーズ1を飛ばして
-フェーズ2(Claude)から始めることになります。
+4つを測って判定まで出します。**特に「遅延」を見てください。**
+
+| 出るもの | 見かた |
+|---|---|
+| 認証 | ヘッダ `X-API-Key` で通るか |
+| **遅延** | 最新記事が何分前か。**12時間遅れなら5分更新は無意味** → 間隔を延ばすか、プラン/ソースを変える |
+| 件数 | 1リクエストで何件返るか(無料は10件との記載あり) |
+| スコア | `sentiment` が付くか。付かなければフェーズ2(Claude)へ前倒し |
+
+ここで方針が決まってから、下の配備に進むほうが手戻りがありません。
+遅延が大きければ、手順4の `ScheduleExpression` を変えて配備します。
 
 ---
 
@@ -155,6 +164,6 @@ aws s3 ls s3://shun-market-sentiment/data/SPX/ --recursive --human-readable --su
 | `sam deploy` が BucketAlreadyExists で落ちる | バケット名は世界で一意。別の名前にする |
 | Lambdaは成功しているのに `latest.json` が無い | リージョン違いのバケットを見ている。コンソール右上を確認 |
 | ログに `APITUBE_KEY を設定してください` | SSMのパラメータ名がテンプレートの `ApiTubeKeyParam` と食い違っている |
-| ログに `HTTP 429` | APITubeの無料枠(1,000/日)を使い切った。更新間隔を延ばす |
+| ログに `HTTP 429` | APITubeの日次上限を使い切った。`ScheduleExpression` を延ばす（15分間隔なら96回/日） |
 
 料金の内訳と、過去データをどう畳むかは `docs/cost.md` にあります。
