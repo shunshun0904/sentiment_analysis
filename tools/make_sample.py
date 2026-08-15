@@ -1,12 +1,11 @@
-"""ローカル確認用のサンプル latest.json を生成する。
+"""ローカル確認用のサンプル public/latest.json を生成する。
 
     python3 tools/make_sample.py && python3 -m http.server -d web 8000
     → http://localhost:8000/
 
-APIキーもAWSも不要。パイプライン本体をそのまま通し、
-ニュース取得とS3だけをインメモリのスタブに差し替える。
+AWSもAPIキーも要らない。S3 だけインメモリに差し替えて、
+集計と latest.json の組み立ては**本番と同じコード**（score / store）を通す。
 """
-
 from __future__ import annotations
 
 import json
@@ -17,82 +16,94 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "src"))
 
-from src import handler  # noqa: E402
-from src.config import Config  # noqa: E402
-from src.models import Article  # noqa: E402
-from src.sources.base import NewsSource  # noqa: E402
+import fakes  # noqa: E402
+
+fakes.install()
+
+import config  # noqa: E402
+import score  # noqa: E402
+import store  # noqa: E402
 
 HEADLINES = [
-    ("Fed signals patience on rate cuts as inflation cools", "reuters.com", 0.35),
-    ("Tech megacaps lead broad rally into the close", "bloomberg.com", 0.72),
-    ("Jobless claims rise more than expected", "wsj.com", -0.41),
-    ("Chipmakers slide after weak guidance from a sector bellwether", "ft.com", -0.66),
-    ("Consumer sentiment index ticks higher for a third month", "cnbc.com", 0.28),
-    ("Oil jumps on supply disruption headlines", "reuters.com", -0.22),
-    ("Treasury yields ease after soft PPI print", "marketwatch.com", 0.44),
-    ("Retailers warn of a cautious holiday season", "bloomberg.com", -0.35),
-    ("Buybacks hit a record as corporate cash piles up", "ft.com", 0.51),
-    ("Regional bank shares wobble on credit quality concerns", "wsj.com", -0.58),
-    ("Manufacturing PMI returns to expansion", "cnbc.com", 0.33),
-    ("Options market prices a quiet week ahead of CPI", "marketwatch.com", 0.05),
+    ("Fed signals patience on rate cuts as inflation cools", "Reuters", 0.35),
+    ("Tech megacaps lead broad rally into the close", "Bloomberg", 0.72),
+    ("Jobless claims rise more than expected", "Wall Street Journal", -0.41),
+    ("Chipmakers slide after weak guidance from a sector bellwether", "Financial Times", -0.66),
+    ("Consumer sentiment index ticks higher for a third month", "CNBC", 0.28),
+    ("Oil jumps on supply disruption headlines", "Reuters", -0.22),
+    ("Treasury yields ease after soft PPI print", "MarketWatch", 0.44),
+    ("Retailers warn of a cautious holiday season", "Bloomberg", -0.35),
+    ("Buybacks hit a record as corporate cash piles up", "Financial Times", 0.51),
+    ("Regional bank shares wobble on credit quality concerns", "Wall Street Journal", -0.58),
+    ("Manufacturing PMI returns to expansion", "CNBC", 0.33),
+    ("Options market prices a quiet week ahead of CPI", "MarketWatch", 0.05),
 ]
+TICKERS = ["NVDA", "AAPL", "MSFT", "SPY", "AMZN", "META", "JPM", "XOM"]
 
 
-class SampleSource(NewsSource):
-    name = "sample"
-
-    def __init__(self, now: datetime) -> None:
-        self.now = now
-
-    def fetch(self, since: datetime, limit: int) -> list[Article]:  # noqa: ARG002
-        rng = random.Random(42)
-        articles = []
-        for i in range(48):
-            title, source, base = HEADLINES[i % len(HEADLINES)]
-            hours_ago = (i / 48) * 24
-            # ゆるやかなうねり + ノイズで、それらしい時系列にする
-            drift = 0.35 * math.sin((24 - hours_ago) / 24 * math.pi * 1.5)
-            articles.append(
-                Article(
-                    id=f"sample-{i:03d}",
-                    title=f"{title}" if i < len(HEADLINES) else f"{title} ({i // len(HEADLINES) + 1})",
-                    url="https://example.com/article/%d" % i,
-                    source=source,
-                    published_at=self.now - timedelta(hours=hours_ago),
-                    summary="サンプルデータです。実際のAPIレスポンスではありません。",
-                    score=max(-1.0, min(1.0, base * 0.6 + drift + rng.uniform(-0.15, 0.15))),
-                    relevance=rng.uniform(0.6, 1.0),
-                    scored_by="sample",
-                )
-            )
-        return articles
+def av(dt: datetime, seconds: bool = True) -> str:
+    return dt.strftime("%Y%m%dT%H%M%S" if seconds else "%Y%m%dT%H%M")
 
 
-class MemoryStore:
-    def __init__(self) -> None:
-        self.objects: dict[str, object] = {}
-
-    def get_json(self, key: str, default=None):
-        return self.objects.get(key, default)
-
-    def put_json(self, key: str, payload, *, max_age: int = 60, public: bool = True) -> None:
-        self.objects[key] = payload
+def make_articles(now: datetime, per_hour: int = 40) -> list[dict]:
+    """直近24時間ぶんの記事。実測（206件/時）より控えめに、
+    relevance フィルタ通過後の量を想定した件数で作る。"""
+    rng = random.Random(20260815)
+    out: list[dict] = []
+    for i in range(24 * per_hour):
+        hours_ago = (i / (24 * per_hour)) * 24
+        published = now - timedelta(hours=hours_ago)
+        title, source, base = HEADLINES[i % len(HEADLINES)]
+        # ゆるやかなうねり + ノイズ。それらしい時系列にするため
+        drift = 0.30 * math.sin((24 - hours_ago) / 24 * math.pi * 1.5)
+        out.append({
+            "url": f"https://example.com/article/{i}",
+            "t": av(published),
+            "source": source,
+            "title": title if i < len(HEADLINES) else f"{title} ({i // len(HEADLINES)})",
+            "overall": round(max(-1.0, min(1.0, base * 0.6 + drift + rng.uniform(-0.12, 0.12))), 4),
+            "rel": round(rng.uniform(0.35, 1.0), 4),
+            "tickers": rng.sample(TICKERS, k=rng.randint(0, 3)),
+        })
+    out.sort(key=lambda a: a["t"])
+    return out
 
 
 def main() -> None:
-    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    cfg = Config(bucket="local", index_id="SPX", index_name="S&P 500", scorer="passthrough")
-    store = MemoryStore()
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    articles = make_articles(now)
 
-    handler.get_source = lambda _cfg: SampleSource(now)  # type: ignore[assignment]
-    payload = handler.run(cfg, now=now, store=store)
+    # 監査ログ（日付ごと）。store.window_articles がここから読み直す
+    by_day: dict[str, list[dict]] = {}
+    for a in articles:
+        by_day.setdefault(f"{a['t'][:4]}-{a['t'][4:6]}-{a['t'][6:8]}", []).append(a)
+    for day, records in by_day.items():
+        store.append_jsonl(f"{config.PREFIX_ARTICLES}{day}.jsonl", records)
 
-    out = ROOT / "web" / "data" / "SPX" / "latest.json"
+    # 毎時の集計。本番と同じ score.aggregate を各時刻で呼ぶ
+    for hours_ago in range(23, -1, -1):
+        t = now - timedelta(hours=hours_ago)
+        visible = [a for a in articles if a["t"] <= av(t)]
+        store.append_jsonl(config.KEY_SERIES, [score.aggregate(visible, t)])
+
+    last_hour = [a for a in articles if a["t"] >= av(now - timedelta(hours=1))]
+    store.build_public(now, last_hour)
+
+    payload = json.loads(store._s3.objects[config.KEY_LATEST].decode("utf-8"))
+    out = ROOT / "web" / "public" / "latest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"書き出し: {out} (score={payload['sentiment']['score']}, points={len(payload['series'])})")
+
+    size_kb = out.stat().st_size / 1024
+    print(f"書き出し: {out}")
+    print(f"  current={payload['current']} raw_mean={payload['raw_mean']} "
+          f"n={payload['n_articles']}")
+    print(f"  series={len(payload['series'])}点 window={len(payload['window'])}件 "
+          f"top_articles={len(payload['top_articles'])}件")
+    print(f"  サイズ {size_kb:.1f}KB（gzip で概ね1/4）")
 
 
 if __name__ == "__main__":

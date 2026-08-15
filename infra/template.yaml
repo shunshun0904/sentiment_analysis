@@ -1,52 +1,36 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: 株式市場センチメント可視化 — EventBridge + Lambda + S3
+Description: 株式市場センチメント可視化 — EventBridge + Lambda + S3 (Alpha Vantage NEWS_SENTIMENT)
 
 Parameters:
   BucketName:
     Type: String
     Description: 履歴JSONとSPAを置くS3バケット名(グローバルで一意)
-  IndexId:
+  AlphaVantageKeyParam:
     Type: String
-    Default: SPX
-  IndexName:
-    Type: String
-    Default: S&P 500
-  NewsQuery:
-    Type: String
-    Default: '"S&P 500" OR "Wall Street" OR "US stocks" OR "Federal Reserve"'
-  NewsLanguage:
-    Type: String
-    Default: en
-  ApiTubeKeyParam:
-    Type: String
-    Default: /market-sentiment/apitube-key
-    Description: APITubeキーを格納した SSM SecureString のパラメータ名
-  AnthropicKeyParam:
-    Type: String
-    Default: /market-sentiment/anthropic-key
-    Description: フェーズ2で使う Anthropic APIキーのパラメータ名(未使用でも可)
-  Scorer:
-    Type: String
-    Default: passthrough
-    AllowedValues: [passthrough, claude, dual]
-    Description: passthrough=API付属スコア / claude=Haiku 4.5 / dual=並走保存
+    Default: /sentiment/alphavantage/api_key
+    Description: Alpha Vantageキーを格納した SSM SecureString のパラメータ名
   ScheduleExpression:
     Type: String
-    Default: rate(5 minutes)
+    Default: rate(60 minutes)
+    Description: >-
+      無料プランは 25 req/day。毎時=24回で予備が1回しか残らないため、
+      src/config.py の SKIP_HOURS_UTC で2時間ぶん間引いて 22回/日 に抑えている。
+      ここを短くしてもクォータで弾かれるだけなので、変えるなら有料プラン前提。
   AllowedOrigin:
     Type: String
     Default: "*"
     Description: >-
       JSONの取得を許すオリジン。ホームページから読むだけなら
       https://shunshun0904.github.io に絞れる。
-  HistoryRetentionDays:
+  ArticleRetentionDays:
     Type: Number
     Default: 400
     MinValue: 2
     Description: >-
-      5分刻みの生の履歴を残す日数。過ぎたぶんは自動削除される。
-      長期の推移は daily.json に1日1点で畳んであるので、消えるのは細かさだけ。
+      記事単位の監査ログ(history/articles/)を残す日数。
+      集計済みの系列 history/sentiment.jsonl はこの規則に触れないので、
+      長期の推移は消えない。消えるのは記事レベルの細かさだけ。
 
 Globals:
   Function:
@@ -79,17 +63,18 @@ Resources:
             MaxAge: 3600
       LifecycleConfiguration:
         Rules:
-          # 記事キャッシュ。消えても次の実行で取り直すだけなので短く
-          - Id: expire-scoring-cache
+          # 実行状態(last_run / seen)。消えても次の実行で作り直せる。
+          # seen は48時間ぶんの重複排除キャッシュなので7日で十分。
+          - Id: expire-state
             Status: Enabled
             Prefix: state/
             ExpirationInDays: 7
-          # 5分刻みの生の履歴。日次(daily.json)に畳んだあとは細かさだけの価値なので、
-          # ここで自動的に打ち止めにする。daily.json と latest.json はこの規則に触れない。
-          - Id: expire-raw-history
+          # 記事単位の監査ログ。集計後は再現用の価値しかないので打ち止めにする。
+          # history/sentiment.jsonl は prefix が違うので消えない。
+          - Id: expire-article-log
             Status: Enabled
-            Prefix: !Sub "data/${IndexId}/history/"
-            ExpirationInDays: !Ref HistoryRetentionDays
+            Prefix: history/articles/
+            ExpirationInDays: !Ref ArticleRetentionDays
           # 書き損じ(マルチパートの残骸)を溜めない
           - Id: abort-incomplete-uploads
             Status: Enabled
@@ -102,37 +87,31 @@ Resources:
       Bucket: !Ref DataBucket
       PolicyDocument:
         Statement:
-          # 公開するのは SPA と data/ 配下のみ。state/(記事キャッシュ)は非公開。
+          # 公開するのは SPA と public/ 配下のみ。
+          # state/(実行状態) history/(監査ログ) observe/(ソース分布)は非公開。
           - Effect: Allow
             Principal: "*"
             Action: s3:GetObject
             Resource:
               - !Sub "arn:aws:s3:::${BucketName}/index.html"
-              - !Sub "arn:aws:s3:::${BucketName}/data/*"
+              - !Sub "arn:aws:s3:::${BucketName}/public/*"
 
   CollectorFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-collector"
-      CodeUri: ../
-      Handler: src.handler.lambda_handler
-      Description: ニュース取得→重複排除→スコア化→S3更新
-      # 5分間隔の単一ジョブ。同時実行を1に固定してキャッシュの競合を防ぐ
+      # src/ をそのままパッケージのルートにする(モジュールはフラットに import している)
+      CodeUri: ../src
+      Handler: handler.lambda_handler
+      Description: ニュース取得→重複排除→集計→S3更新
+      # 単一ジョブ。同時実行を1に固定して state/ の競合とクォータの二重消費を防ぐ
       ReservedConcurrentExecutions: 1
       Environment:
         Variables:
-          DATA_BUCKET: !Ref BucketName
-          INDEX_ID: !Ref IndexId
-          INDEX_NAME: !Ref IndexName
-          NEWS_QUERY: !Ref NewsQuery
-          NEWS_LANGUAGE: !Ref NewsLanguage
-          NEWS_SOURCE: apitube
-          SCORER: !Ref Scorer
-          APITUBE_KEY_SSM_PARAM: !Ref ApiTubeKeyParam
-          ANTHROPIC_KEY_SSM_PARAM: !Ref AnthropicKeyParam
-          WINDOW_HOURS: "24"
-          HALF_LIFE_HOURS: "6"
-          UPDATE_INTERVAL_SECONDS: "300"
+          S3_BUCKET: !Ref BucketName
+          AV_KEY_SSM: !Ref AlphaVantageKeyParam
+          # SPAのポーリング間隔。ScheduleExpression と揃えること
+          UPDATE_INTERVAL_SECONDS: "3600"
           LOG_LEVEL: INFO
       Policies:
         - S3CrudPolicy:
@@ -141,14 +120,13 @@ Resources:
             - Effect: Allow
               Action: ssm:GetParameter
               Resource:
-                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ApiTubeKeyParam}"
-                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AnthropicKeyParam}"
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AlphaVantageKeyParam}"
       Events:
         Tick:
           Type: Schedule
           Properties:
             Schedule: !Ref ScheduleExpression
-            Description: 5分間隔のセンチメント更新
+            Description: 60分間隔のセンチメント更新
 
   # ログは放っておくと無期限に残る。14日で足りる(障害の調査はその場でやる)
   CollectorLogs:
@@ -158,6 +136,7 @@ Resources:
       RetentionInDays: 14
 
   # 失敗が続いたら気づけるようにしておく(無料枠内)
+  # 60分間隔なので、3回失敗＝3時間止まっている。評価期間を4時間に合わせる。
   ErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -168,7 +147,7 @@ Resources:
         - Name: FunctionName
           Value: !Ref CollectorFunction
       Statistic: Sum
-      Period: 900
+      Period: 14400
       EvaluationPeriods: 1
       Threshold: 3
       ComparisonOperator: GreaterThanOrEqualToThreshold
@@ -180,9 +159,6 @@ Outputs:
     Value: !GetAtt DataBucket.WebsiteURL
   LatestJsonURL:
     Description: ホームページ側の data/sentiment.js に書くURL
-    Value: !Sub "https://${BucketName}.s3.${AWS::Region}.amazonaws.com/data/${IndexId}/latest.json"
-  DailyJsonURL:
-    Description: 日次に畳んだ長期の推移(生の履歴を消しても残る)
-    Value: !Sub "https://${BucketName}.s3.${AWS::Region}.amazonaws.com/data/${IndexId}/daily.json"
+    Value: !Sub "https://${BucketName}.s3.${AWS::Region}.amazonaws.com/public/latest.json"
   FunctionName:
     Value: !Ref CollectorFunction

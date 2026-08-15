@@ -1,3 +1,2 @@
-# フェーズ1は追加依存なしで動く(boto3 は Lambda ランタイムに同梱)。
-# フェーズ2(SCORER=claude / dual)に移行するとき、次の行を有効にする:
-# anthropic>=0.60
+# 追加依存なしで動く(boto3 は Lambda ランタイムに同梱、それ以外は標準ライブラリ)。
+# テストも標準ライブラリ + pytest だけで走る:  python3 -m pytest -q
