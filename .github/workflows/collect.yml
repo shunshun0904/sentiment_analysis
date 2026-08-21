@@ -1,0 +1,91 @@
+name: Collect market sentiment
+
+# 金融ニュースのセンチメントを集計して data ブランチへ置く。
+#
+# ⚠️ schedule はまだ有効にしていない。先に「Probe Alpha Vantage」を手で1回押し、
+#    GitHub のランナーから叩けることを確かめてから、下の2行のコメントを外すこと。
+#
+# 毎正時を避けて :17 にしてある。GitHub の schedule はベストエフォートで、
+# 毎正時は 5〜30分の遅延が普通、高負荷時は run そのものが落ちることもある。
+#
+# 落ちても壊れない。fetch.build_window() は「前回成功時刻 − 15分」を起点にするので、
+# 次の回が空白ぶんをまとめて取り直す。実測 206件/時 に対し limit=1000 なので、
+# およそ4.8時間ぶんまでは1リクエストで取り戻せる。
+#
+# UTC 5時・6時を外しているのは src/config.py の SKIP_HOURS_UTC と同じ理由
+# （米系ニュースが薄い時間帯を間引いて、25req/日 の枠に予備を3回残す）。
+# handler 側でも同じ時刻を弾くので、ここは無駄打ちを減らすためのもの。
+
+on:
+  # schedule:
+  #   - cron: '17 0-4,7-23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 前の回が押していると git push が競合する。重ねない。
+concurrency:
+  group: sentiment-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: コードを取り出す
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 状態（last_run / seen）と履歴は data ブランチにある。
+      # --depth 1 にしてあるので、履歴が伸びても取得時間は変わらない。
+      - name: データを取り出す（無ければ作る）
+        env:
+          REPO: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          if git ls-remote --exit-code --heads "$REPO" data >/dev/null 2>&1; then
+            git clone --depth 1 --branch data "$REPO" data
+            echo "data ブランチから続きを取得"
+          else
+            mkdir data
+            git -C data init -q
+            git -C data checkout -q -b data
+            git -C data remote add origin "$REPO"
+            echo "data ブランチが無いので新規に作る（初回）"
+          fi
+
+      - name: 集計する
+        env:
+          AV_API_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
+          STORE_BACKEND: fs
+          DATA_DIR: data
+          PYTHONPATH: src
+          # 画面側のポーリング間隔。上の cron と揃えること
+          UPDATE_INTERVAL_SECONDS: '3600'
+        run: python3 -m handler
+
+      # 単体SPAも同じ場所から配れば、data ブランチだけで完結する。
+      # https://<user>.github.io/sentiment_analysis/ が動く画面になる。
+      - name: 画面を同梱する
+        run: |
+          cp web/index.html data/index.html
+          touch data/.nojekyll
+
+      - name: 変化があればコミットする
+        working-directory: data
+        run: |
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "変化なし。何もしない"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit \
+            -m "センチメントを更新 $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            -m "出典は Alpha Vantage NEWS_SENTIMENT。src/handler.py による自動更新。" \
+            -m "スコアは記事ごとの overall_sentiment_score を時間減衰で加重平均したもの。"
+          git push origin data

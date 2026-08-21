@@ -108,6 +108,8 @@ Resources:
       ReservedConcurrentExecutions: 1
       Environment:
         Variables:
+          # 既定は fs（GitHub Actions 用）なので、Lambda では明示的に s3 を選ぶ
+          STORE_BACKEND: s3
           S3_BUCKET: !Ref BucketName
           AV_KEY_SSM: !Ref AlphaVantageKeyParam
           # SPAのポーリング間隔。ScheduleExpression と揃えること

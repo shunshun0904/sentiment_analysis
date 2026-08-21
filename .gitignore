@@ -7,3 +7,6 @@ samconfig.toml
 web/public/
 .venv/
 node_modules/
+
+# GitHub Actions のローカル実行で作られる置き場
+data/

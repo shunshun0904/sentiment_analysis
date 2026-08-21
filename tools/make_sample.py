@@ -3,7 +3,7 @@
     python3 tools/make_sample.py && python3 -m http.server -d web 8000
     → http://localhost:8000/
 
-AWSもAPIキーも要らない。S3 だけインメモリに差し替えて、
+AWSもAPIキーも要らない。置き場を一時ディレクトリに向けるだけで、
 集計と latest.json の組み立ては**本番と同じコード**（score / store）を通す。
 """
 from __future__ import annotations
@@ -12,16 +12,12 @@ import json
 import math
 import random
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
-
-import fakes  # noqa: E402
-
-fakes.install()
 
 import config  # noqa: E402
 import score  # noqa: E402
@@ -73,6 +69,9 @@ def make_articles(now: datetime, per_hour: int = 40) -> list[dict]:
 
 
 def main() -> None:
+    # 本番と同じ store を通したいので、置き場だけ捨ててよい場所に向ける
+    config.DATA_DIR = tempfile.mkdtemp(prefix="sentiment-sample-")
+
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     articles = make_articles(now)
 
@@ -86,13 +85,16 @@ def main() -> None:
     # 毎時の集計。本番と同じ score.aggregate を各時刻で呼ぶ
     for hours_ago in range(23, -1, -1):
         t = now - timedelta(hours=hours_ago)
-        visible = [a for a in articles if a["t"] <= av(t)]
+        # 本番（store.window_articles）と同じく減衰ウィンドウで切る。
+        # ここがずれると、SPA の「サーバ側の毎時集計と照合」が意味を失う
+        lo = av(t - timedelta(hours=config.DECAY_WINDOW_HOURS))
+        visible = [a for a in articles if lo <= a["t"] <= av(t)]
         store.append_jsonl(config.KEY_SERIES, [score.aggregate(visible, t)])
 
     last_hour = [a for a in articles if a["t"] >= av(now - timedelta(hours=1))]
     store.build_public(now, last_hour)
 
-    payload = json.loads(store._s3.objects[config.KEY_LATEST].decode("utf-8"))
+    payload = store.get_json(config.KEY_LATEST)
     out = ROOT / "web" / "public" / "latest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

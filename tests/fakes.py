@@ -1,10 +1,8 @@
-"""テスト用の足場。
+"""テスト用の足場 ── 偽の boto3。
 
-`store` は import 時に boto3 クライアントを作るので、boto3 が無い環境
-（この開発コンテナ・CI）では素直に import できない。偽の boto3 を
-sys.modules に差し込んでから import する。
-
-同時に、S3 をインメモリの辞書に置き換える。ネットワークもAWSも要らない。
+fs バックエンドでは要らない。s3 バックエンドが fs と同じ振る舞いをするか
+確かめる1本のテストのためだけに置いてある（boto3 はこの開発環境にも CI にも
+入っていないので、sys.modules に偽物を差し込んでから import する）。
 """
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ class _NoSuchKey(Exception):
 
 
 class FakeS3:
-    """put/get だけの S3。中身は self.objects に文字列で持つ。"""
+    """put/get だけの S3。中身は self.objects に bytes で持つ。"""
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
@@ -51,8 +49,8 @@ class FakeSSM:
         return {"Parameter": {"Value": self.value}}
 
 
-def install(bucket: str = "test-bucket") -> FakeS3:
-    """偽 boto3 を仕込んで `store` を import できる状態にし、FakeS3 を返す。"""
+def install_boto3() -> FakeS3:
+    """偽 boto3 を sys.modules に仕込み、FakeS3 を返す。"""
     s3 = FakeS3()
 
     fake_boto3 = types.ModuleType("boto3")
@@ -66,8 +64,4 @@ def install(bucket: str = "test-bucket") -> FakeS3:
     sys.modules["boto3"] = fake_boto3
     sys.modules["botocore"] = botocore
     sys.modules["botocore.exceptions"] = exceptions
-
-    import os
-
-    os.environ.setdefault("S3_BUCKET", bucket)
     return s3

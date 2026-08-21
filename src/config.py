@@ -50,10 +50,23 @@ MIN_TOPIC_RELEVANCE = 0.30   # これ未満の記事は捨てる
 # 記事一覧パネル用に残す言及銘柄の数（スコアには使わない）
 TICKERS_PER_ARTICLE = 3
 
-# ---- S3 ----
-# 未設定でも import 時に落とさない（テストとローカル道具のため）。
-# 実行時に空なら store 側で気づく。
+# ---- 保存先 ----
+# 同じキー空間を2つの置き場で使う。どちらを使うかはここだけで決まる。
+#
+#   "fs" — ローカルのファイル。GitHub Actions 用。DATA_DIR 配下に書き、
+#          ワークフローが data ブランチへコミットして永続化する
+#   "s3" — S3。AWS Lambda 用（infra/template.yaml が STORE_BACKEND=s3 を渡す）
+#
+# 既定を "fs" にしてあるのは、テストもローカル道具も AWS 無しで動かせるため。
+STORE_BACKEND = os.environ.get("STORE_BACKEND", "fs")
+
+# fs バックエンドの根。下の KEY_* はこの下の相対パスになる。
+DATA_DIR = os.environ.get("DATA_DIR", "data")
+
+# s3 バックエンドのバケット。未設定でも import 時に落とさない。
 S3_BUCKET = os.environ.get("S3_BUCKET", "")
+
+# 置き場によらない共通のキー。fs ではそのままパス名として使う。
 KEY_LAST_RUN = "state/last_run.json"
 KEY_SEEN = "state/seen.json"
 KEY_SERIES = "history/sentiment.jsonl"

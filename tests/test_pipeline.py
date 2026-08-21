@@ -1,4 +1,8 @@
-"""パイプライン各段のテスト。ネットワークもAWSも要らない。"""
+"""パイプライン各段のテスト。ネットワークもAWSも要らない。
+
+保存先は既定の fs バックエンド（tmp_path）で回す。s3 バックエンドが同じ
+振る舞いをするかは test_both_backends_behave_the_same で1本だけ確かめる。
+"""
 from __future__ import annotations
 
 import json
@@ -11,10 +15,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
-
-import fakes  # noqa: E402
-
-S3 = fakes.install()
 
 import config  # noqa: E402
 import dedup  # noqa: E402
@@ -43,10 +43,9 @@ def article(hours_ago: float, overall: float, *, rel: float = 1.0, url: str = ""
 
 
 @pytest.fixture(autouse=True)
-def clean_s3():
-    S3.objects.clear()
-    S3.put_args.clear()
-    yield
+def data_dir(tmp_path, monkeypatch):
+    """1本ごとに空の置き場を渡す。テスト同士が状態を共有しないように。"""
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
 
 
 # --- score ---------------------------------------------------------------
@@ -275,7 +274,7 @@ def test_build_public_carries_everything_the_spa_needs():
     store.append_jsonl(config.KEY_SERIES, [score.aggregate([article(1, 0.5)], NOW)])
 
     store.build_public(NOW, [article(1, 0.5)])
-    payload = json.loads(S3.objects[config.KEY_LATEST].decode("utf-8"))
+    payload = store.get_json(config.KEY_LATEST)
 
     assert payload["schema_version"] == 2
     assert payload["params"]["half_life_hours"] == config.HALF_LIFE_HOURS
@@ -291,7 +290,7 @@ def test_build_public_caps_the_window(monkeypatch):
     store.append_jsonl(f"{config.PREFIX_ARTICLES}{NOW.date().isoformat()}.jsonl",
                        [article(3, 0.1), article(2, 0.2), article(1, 0.3)])
     store.build_public(NOW, [])
-    payload = json.loads(S3.objects[config.KEY_LATEST].decode("utf-8"))
+    payload = store.get_json(config.KEY_LATEST)
     # 上限を超えたら新しいほうを残す
     assert [a["s"] for a in payload["window"]] == [0.2, 0.3]
 
@@ -305,3 +304,164 @@ def test_append_jsonl_is_read_back_line_by_line():
 def test_missing_key_reads_as_empty():
     assert store.read_jsonl("nope.jsonl") == []
     assert store.get_json("nope.json", default={"x": 1}) == {"x": 1}
+
+
+def test_both_backends_behave_the_same(monkeypatch):
+    """S3 とローカルファイルで、store の外から見た振る舞いが変わらないこと。
+
+    AWS に配備しなおす道は残してあるので、fs だけ通っていても意味が無い。
+    無い鍵は default、追記は積み上がる ── 両方で同じであることを押さえる。
+    """
+    import fakes
+
+    s3 = fakes.install_boto3()
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
+    import backend_s3
+    monkeypatch.setattr(config, "S3_BUCKET", "test-bucket")
+    monkeypatch.setattr(store, "_be", backend_s3)
+
+    assert store.get_json("nope.json", default={"x": 1}) == {"x": 1}
+    assert store.read_jsonl("nope.jsonl") == []
+
+    store.append_jsonl("k.jsonl", [{"a": 1}])
+    store.append_jsonl("k.jsonl", [{"a": 2}, {"a": 3}])
+    assert store.read_jsonl("k.jsonl") == [{"a": 1}, {"a": 2}, {"a": 3}]
+
+    store.put_json("j.json", {"hello": "世界"})
+    assert store.get_json("j.json") == {"hello": "世界"}
+
+    # S3 でだけ意味を持つもの ── 60秒キャッシュと Content-Type
+    last = [p for p in s3.put_args if p["Key"] == "j.json"][-1]
+    assert last["CacheControl"] == "max-age=60"
+    assert last["ContentType"] == "application/json"
+
+
+# --- handler（GitHub Actions が通す道そのもの） ---------------------------
+
+
+def _feed_item(minutes_ago: int, overall: float, *, url: str, title: str) -> dict:
+    """Alpha Vantage の生レスポンス1件ぶん。trim される前の形。"""
+    t = NOW - timedelta(minutes=minutes_ago)
+    return {
+        "url": url,
+        "time_published": av(t),
+        "source_domain": "reuters.com",
+        "title": title,
+        "overall_sentiment_score": overall,
+        "overall_sentiment_label": "Neutral",
+        "summary": "落とされるはずの本文。" * 50,
+        "banner_image": "https://example.com/x.png",
+        "topics": [{"topic": "financial_markets", "relevance_score": "0.85"}],
+        "ticker_sentiment": [{"ticker": "NVDA", "relevance_score": "0.6"}],
+    }
+
+
+def test_handler_run_writes_everything_the_next_run_and_the_spa_need(monkeypatch):
+    """`python3 -m handler` が1回走ったあとの状態を、外から見える形で確かめる。
+
+    ワークフローはこの関数を呼ぶだけなので、ここが通れば
+    あとは data ブランチへコミットするだけになる。
+    """
+    import handler
+
+    feed = [
+        _feed_item(10, 0.42, url="https://example.com/a", title="Rally into the close"),
+        _feed_item(20, -0.30, url="https://example.com/b", title="Claims rise"),
+        # 同じ記事の別ドメイン配信。URLが違ってもタイトルで落ちる
+        _feed_item(20, -0.30, url="https://other.example/b2", title="Claims rise!"),
+    ]
+    monkeypatch.setattr(store, "utcnow", lambda: NOW)
+    monkeypatch.setattr(store, "get_api_key", lambda: "test-key")
+    monkeypatch.setattr(fetch, "fetch_news", lambda *a, **kw: {"feed": feed, "items": "3"})
+
+    result = handler.lambda_handler({}, None)
+    assert result["status"] == "ok"
+    assert result["n_articles"] == 2          # 3件目は重複として落ちる
+
+    # 1. 次の回が続きから取れる
+    state = store.get_json(config.KEY_LAST_RUN)
+    assert state["last_success_utc"] == NOW.strftime("%Y%m%dT%H%M")
+    assert state["requests_used_today"] == 1
+
+    # 2. 画面が読むもの
+    payload = store.get_json(config.KEY_LATEST)
+    assert payload["schema_version"] == 2
+    assert payload["n_articles"] == 2
+    assert len(payload["window"]) == 2
+    assert payload["params"]["half_life_hours"] == config.HALF_LIFE_HOURS
+
+    # 3. 監査ログ。summary / banner_image は落ちている
+    day = NOW.date().isoformat()
+    logged = store.read_jsonl(f"{config.PREFIX_ARTICLES}{day}.jsonl")
+    assert len(logged) == 2
+    assert set(logged[0]) == {"url", "t", "source", "title", "overall", "rel", "tickers"}
+
+    # 4. 観測モードでソース分布が貯まっている（ホワイトリスト確定用）
+    assert store.get_json(config.KEY_SOURCES) == {"reuters.com": 3}
+
+
+def test_handler_skips_the_quiet_hours_without_spending_quota(monkeypatch):
+    quiet = NOW.replace(hour=sorted(config.SKIP_HOURS_UTC)[0])
+    monkeypatch.setattr(store, "utcnow", lambda: quiet)
+
+    import handler
+
+    def boom(*a, **kw):
+        raise AssertionError("間引く時間帯なのに取得しようとした")
+
+    monkeypatch.setattr(fetch, "fetch_news", boom)
+    assert handler.lambda_handler({}, None)["reason"] == "quiet_hour"
+
+
+def test_the_number_covers_the_whole_window_not_just_this_run(monkeypatch):
+    """新着が0件の回でも、24時間ぶんの値が出続けること。
+
+    集計を「今回取った記事」に対して行うと、重複排除で新着が0になった回に
+    current が null に落ちて画面から数字が消える。S(t) の定義（24時間の
+    加重平均）からも外れる。実際にそうなっていたので、ここで固定する。
+    """
+    import handler
+
+    fresh = [_feed_item(10, 0.42, url="https://example.com/a", title="Rally")]
+    monkeypatch.setattr(store, "utcnow", lambda: NOW)
+    monkeypatch.setattr(store, "get_api_key", lambda: "test-key")
+    monkeypatch.setattr(fetch, "fetch_news", lambda *a, **kw: {"feed": fresh, "items": "1"})
+
+    # 1回目 ── 記事を取り込む
+    first = handler.lambda_handler({}, None)
+    assert first["n_articles"] == 1
+
+    # 2回目 ── 同じ記事しか返ってこない（＝新着0件）
+    second = handler.lambda_handler({}, None)
+    assert second["n_articles"] == 1, "新着が0でも窓の中身で測り続ける"
+    assert second["sentiment"] is not None
+
+    payload = store.get_json(config.KEY_LATEST)
+    assert payload["current"] is not None
+    assert payload["n_articles"] == 1
+    # 今回の取得ぶんは0件なので、記事一覧は空になる（これは正しい）
+    assert payload["top_articles"] == []
+
+
+def test_series_rows_are_the_window_aggregate(monkeypatch):
+    """history/sentiment.jsonl の各行が、その時刻の窓全体の集計であること。
+
+    SPA はこの系列と自分の5分刻み再構成を突き合わせて自己点検する。
+    両者の定義がずれていると、その照合が意味を失う。
+    """
+    import handler
+
+    older = _feed_item(600, -0.60, url="https://example.com/old", title="Old news")
+    newer = _feed_item(10, 0.40, url="https://example.com/new", title="New news")
+    monkeypatch.setattr(store, "utcnow", lambda: NOW)
+    monkeypatch.setattr(store, "get_api_key", lambda: "test-key")
+    monkeypatch.setattr(fetch, "fetch_news",
+                        lambda *a, **kw: {"feed": [older, newer], "items": "2"})
+    handler.lambda_handler({}, None)
+
+    row = store.read_jsonl(config.KEY_SERIES)[-1]
+    expected = score.aggregate(store.window_articles(NOW), NOW)
+    assert row["sentiment"] == expected["sentiment"]
+    assert row["n_articles"] == 2
+    # 10時間前の記事は減衰で軽くなるので、単純平均より新しい側に寄る
+    assert row["sentiment"] > row["raw_mean"]

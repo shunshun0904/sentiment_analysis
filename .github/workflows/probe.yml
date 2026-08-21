@@ -1,0 +1,34 @@
+name: Probe Alpha Vantage
+
+# 手で押すだけ。定期実行はしない。
+#
+# 集計を毎時回す前に、ここで3つ確かめる:
+#   1. GitHub のランナー（データセンターIP）から叩けるか
+#      ── BGG は同じ経路を 401 で弾いていた（playbench の bgg.yml）。
+#         Alpha Vantage が同じ挙動をしない保証はどこにも無い
+#   2. 無料プランで NEWS_SENTIMENT が使えるか
+#   3. time_published のタイムゾーン（UTC か US/Eastern か）
+#
+# ここが通ってから collect.yml の schedule を有効にすること。
+# 1日25リクエストの枠を1つ使う。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Alpha Vantage を1回だけ叩く
+        env:
+          AV_API_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}
+        run: python3 tools/probe_alphavantage.py

@@ -1,21 +1,40 @@
 # 株式市場センチメント可視化
 
 金融ニュースのセンチメントを時間減衰付き加重平均で集計し、指数(まずS&P500)の
-「今の空気」を可視化する。Lambda + EventBridge + S3 のサーバレス構成。
+「今の空気」を可視化する。
 
 ```
-EventBridge (60分)
-  └→ Lambda  取得 → 重複排除 → ソースフィルタ → 集計
-        └→ S3  public/latest.json             ← 画面が60分ごとにfetch
-               history/sentiment.jsonl        ← 毎時の集計(残す)
-               history/articles/YYYY-MM-DD.jsonl ← 記事の監査ログ(400日で自動削除)
-               state/last_run.json / seen.json   ← 実行状態(非公開・7日)
-               observe/sources.json              ← ソース分布(非公開)
+60分に1回  取得 → 重複排除 → ソースフィルタ → 集計 → 保存
+      └→  public/latest.json                ← 画面が60分ごとにfetch
+          history/sentiment.jsonl           ← 毎時の集計(残す)
+          history/articles/YYYY-MM-DD.jsonl ← 記事の監査ログ
+          state/last_run.json / seen.json   ← 実行状態
+          observe/sources.json              ← ソース分布
 
 見せ方は2つ。どちらも同じ latest.json を読む:
   ホームページ  shunshun0904/playbench の「市場センチメント」タブ ← こちらが本番
-  単体のSPA     web/index.html(バケットに置けば単体でも見られる)
+  単体のSPA     web/index.html
 ```
+
+## 動かし方は2つある
+
+**保存先だけが違い、パイプラインは同じコードです**(`STORE_BACKEND` で切り替え)。
+
+| | GitHub Actions ← **推奨** | AWS |
+|---|---|---|
+| 実行 | `schedule` cron | EventBridge |
+| 保存 | `data` ブランチ(git) | S3 |
+| 配信 | GitHub Pages | S3 静的ホスティング |
+| 鍵 | Actions secrets | SSM SecureString |
+| CORS | **不要**(Pages が `*` を返す) | バケットに設定が要る |
+| 料金 | **0円** | 月2〜4円 |
+| 手続き | 鍵を1つ登録 → ボタン2回 | IAM・SSM・SAM・予算アラート |
+| 実行時刻 | ベストエフォート(遅延・欠落あり) | 確実 |
+| 手順書 | **`docs/github-actions.md`** | `docs/aws-setup.md` |
+
+Actions の遅延・欠落は設計が吸収する。`fetch.build_window()` が
+「前回**成功**時刻 − 15分」を起点にするので、次の回が空白ぶんを取り直す
+(実測206件/時 × 4.8時間 ≒ 990件 < `AV_LIMIT` 1000)。
 
 ## 更新は60分、表示は5分刻み
 
@@ -34,32 +53,55 @@ $$S(t) = \frac{\sum_j d_j \cdot r_j \cdot s_j}{\sum_j d_j \cdot r_j},\qquad
 
 | パス | 役割 |
 |---|---|
-| `src/handler.py` | Lambda本体。パイプラインの各段を順に呼ぶだけ |
+| `src/handler.py` | パイプラインの結線。入口は2つ(`lambda_handler` / `python3 -m handler`) |
 | `src/fetch.py` | Alpha Vantage クライアント。ウィンドウ計算、クォータ確認 |
 | `src/dedup.py` | 重複排除(URL＋正規化タイトル)、ソースフィルタ、レコード削減 |
 | `src/score.py` | **センチメント集計。差し替え対象はここだけ** |
-| `src/store.py` | S3 I/O、SSMからの鍵取得、`public/latest.json` 生成 |
+| `src/store.py` | 保存の読み書き、`public/latest.json` 生成。置き場に依存しない |
+| `src/backend_fs.py` | 置き場: ローカルのファイル(GitHub Actions) |
+| `src/backend_s3.py` | 置き場: S3(AWS Lambda)。boto3 の import はここだけ |
 | `src/config.py` | 全パラメータ。**暫定値はここにコメントで明記してある** |
 | `web/index.html` | SPA(単一HTML、依存ライブラリなし)。5分刻みの再構築を持つ |
+| `.github/workflows/collect.yml` | **60分ごとの集計**(GitHub Actions) |
+| `.github/workflows/probe.yml` | 手動。ランナーから叩けるか・無料枠か・時刻系を実測する |
 | `infra/template.yaml` | SAMテンプレート(バケット/Lambda/スケジュール/アラーム) |
-| `docs/SCHEMA.md` | **JSONスキーマの正**。SPAとLambdaの契約 |
+| `docs/SCHEMA.md` | **JSONスキーマの正**。画面と集計側の契約 |
 | `docs/handoff-v2.md` | 設計の経緯と確定事項。実測値はこちらが正 |
-| `docs/aws-setup.md` | **AWS側でやる手続き**。鍵の登録から配備・停止まで |
+| `docs/github-actions.md` | **GitHub Actions で動かす手順**(こちらが推奨) |
+| `docs/aws-setup.md` | AWS側でやる手続き。鍵の登録から配備・停止まで |
 | `docs/cost.md` | 料金の内訳と、過去データを畳む方針 |
-| `tools/make_sample.py` | AWS不要のサンプルデータ生成(ローカル確認用) |
+| `tools/make_sample.py` | 鍵不要のサンプルデータ生成(ローカル確認用) |
+| `tools/probe_alphavantage.py` | APIを1回叩いて実際に何が返るか見る |
 
 ## ローカルで動かす
 
 ```bash
-python3 -m pytest -q                 # 34件、AWS・ネットワーク不要
+python3 -m pytest -q                 # 39件、AWS・ネットワーク不要
 python3 tools/make_sample.py         # web/public/latest.json を生成
 python3 -m http.server -d web 8000   # → http://localhost:8000/
 ```
 
-`tools/make_sample.py` は S3 だけインメモリに差し替えて、集計と `latest.json` の
-組み立ては**本番と同じコード**(`score` / `store`)を通す。
+`tools/make_sample.py` は置き場を一時ディレクトリに向けるだけで、集計と
+`latest.json` の組み立ては**本番と同じコード**(`score` / `store`)を通す。
 
-## デプロイ
+## 配備 — GitHub Actions(推奨)
+
+手順の全文は **`docs/github-actions.md`**。短く書くと:
+
+```
+1. Secrets に ALPHAVANTAGE_KEY を登録
+2. Actions → "Probe Alpha Vantage" を手で1回押す   ← ここが分岐点
+3. Actions → "Collect market sentiment" を1回押す（data ブランチができる）
+4. Settings → Pages → Source を data ブランチ / (root) に
+5. playbench の data/sentiment.js に endpoint を書く
+6. collect.yml の schedule のコメントを外す
+```
+
+手順2で `premium` と言われたら無料枠では使えない。ランナーから到達できなければ
+IP で弾かれている(BGG が同じ経路を401で弾いていた前例がある)。
+どちらも Actions か AWS かに関係しない問題なので、**先に確かめる**。
+
+## 配備 — AWS(代替)
 
 手順の全文は **`docs/aws-setup.md`**(鍵の登録・予算アラート・停止の仕方まで)。
 短く書くと:
@@ -87,8 +129,11 @@ aws s3 cp web/index.html s3://<バケット>/index.html --content-type "text/htm
 
 | 変数 | 既定 | 意味 |
 |---|---|---|
-| `S3_BUCKET` | — | データとSPAを置くバケット |
-| `AV_KEY_SSM` | `/sentiment/alphavantage/api_key` | 鍵を入れた SSM SecureString |
+| `STORE_BACKEND` | `fs` | `fs` = ローカルのファイル / `s3` = S3 |
+| `DATA_DIR` | `data` | `fs` のときの置き場の根 |
+| `AV_API_KEY` | — | `fs` のときの鍵(Actions secrets から渡す) |
+| `S3_BUCKET` | — | `s3` のときのバケット |
+| `AV_KEY_SSM` | `/sentiment/alphavantage/api_key` | `s3` のときの SSM パス |
 | `UPDATE_INTERVAL_SECONDS` | `3600` | 画面側のポーリング間隔。スケジュールと揃える |
 
 | `config.py` の値 | 既定 | 備考 |
@@ -111,7 +156,10 @@ aws s3 cp web/index.html s3://<バケット>/index.html --content-type "text/htm
 
 ## 貯まるデータと料金
 
-月2〜4円。60分間隔なので v1(5分間隔)の想定より1桁小さい。
+**GitHub Actions なら0円**(public リポジトリは分数無制限)。ただしリポジトリは
+`latest.json` の毎時書き換えで年32〜128MB 太る ── 畳み方は `docs/github-actions.md`。
+
+AWS の場合は月2〜4円。60分間隔なので v1(5分間隔)の想定より1桁小さい。
 **主役はストレージではなくPUTリクエスト**で、1年ぶんのストレージは月0.04円。
 内訳と根拠は `docs/cost.md`。
 
@@ -122,7 +170,9 @@ aws s3 cp web/index.html s3://<バケット>/index.html --content-type "text/htm
 | `state/` | 実行状態 | 7日で自動削除 |
 
 集計済みの系列は記事ログと prefix が違うので、**記事が消えても長期の推移は残る**。
-削除はS3のライフサイクルがやる。手で消す作業は無い。
+上の「保持」はAWSの話で、削除はS3のライフサイクルがやる(手で消す作業は無い)。
+GitHub Actions では自動失効の仕掛けが無いので、太ってきたら `data` ブランチを
+畳む(`docs/github-actions.md`)。
 
 ## 未確定・要検証(コード中のコメントにも同じことが書いてある)
 

@@ -1,79 +1,60 @@
-"""S3 の読み書き。"""
+"""保存の読み書き。
+
+置き場そのもの（S3 / ローカルファイル）は backend_* に閉じてあり、
+ここから下はどちらでも同じコードが動く。JSON と JSONL の組み立て、
+減衰ウィンドウの読み直し、latest.json の生成がこのファイルの仕事。
+"""
 import json
 from datetime import datetime, timedelta, timezone
 
-import boto3
-from botocore.exceptions import ClientError
-
 import config
 
-_s3 = boto3.client("s3")
+if config.STORE_BACKEND == "s3":
+    import backend_s3 as _be
+else:
+    import backend_fs as _be
 
 
 def get_json(key: str, default=None):
-    try:
-        obj = _s3.get_object(Bucket=config.S3_BUCKET, Key=key)
-    except ClientError as e:
-        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
-            return default
-        raise
-    return json.loads(obj["Body"].read().decode("utf-8"))
+    raw = _be.read_bytes(key)
+    if raw is None:
+        return default
+    return json.loads(raw.decode("utf-8"))
 
 
 def put_json(key: str, data) -> None:
-    _s3.put_object(
-        Bucket=config.S3_BUCKET,
-        Key=key,
-        Body=json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-        ContentType="application/json",
-        CacheControl="max-age=60",
-    )
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    _be.write_bytes(key, body, "application/json")
 
 
 def append_jsonl(key: str, records: list[dict]) -> None:
-    """S3 に追記APIは無いので read-modify-write。
+    """追記APIが無い置き場（S3）に合わせて read-modify-write で統一する。
 
     毎時1回・単一ライターなので競合しない。並列実行する設計に変えるなら
     ここは日付分割か DynamoDB に置き換えること。
     """
     if not records:
         return
-    try:
-        obj = _s3.get_object(Bucket=config.S3_BUCKET, Key=key)
-        existing = obj["Body"].read().decode("utf-8")
-    except ClientError as e:
-        if e.response["Error"]["Code"] not in ("NoSuchKey", "404"):
-            raise
-        existing = ""
+    raw = _be.read_bytes(key)
+    existing = raw.decode("utf-8") if raw else ""
 
     lines = [json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in records]
     body = existing + ("" if existing.endswith("\n") or not existing else "\n")
     body += "\n".join(lines) + "\n"
 
-    _s3.put_object(
-        Bucket=config.S3_BUCKET, Key=key,
-        Body=body.encode("utf-8"), ContentType="application/x-ndjson",
-    )
+    _be.write_bytes(key, body.encode("utf-8"), "application/x-ndjson")
 
 
 def read_jsonl(key: str) -> list[dict]:
-    try:
-        obj = _s3.get_object(Bucket=config.S3_BUCKET, Key=key)
-    except ClientError as e:
-        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
-            return []
-        raise
-    out = []
-    for line in obj["Body"].read().decode("utf-8").splitlines():
-        if line.strip():
-            out.append(json.loads(line))
-    return out
+    raw = _be.read_bytes(key)
+    if raw is None:
+        return []
+    return [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
 
 
 def get_api_key() -> str:
-    ssm = boto3.client("ssm")
-    resp = ssm.get_parameter(Name=config.AV_API_KEY_SSM_PATH, WithDecryption=True)
-    return resp["Parameter"]["Value"]
+    """鍵の出どころは置き場によって違う（SSM か 環境変数か）。backend に委ねる。"""
+    return _be.get_api_key()
 
 
 def window_articles(now: datetime) -> list[dict]:
@@ -91,11 +72,14 @@ def window_articles(now: datetime) -> list[dict]:
     return out
 
 
-def build_public(now: datetime, articles: list[dict]) -> None:
+def build_public(now: datetime, articles: list[dict], window: list[dict] | None = None) -> None:
     """SPA が取得する latest.json を生成する。
 
-    `window` は5分刻みの再構成用。`top_articles`（|score|上位）は偏った標本なので、
-    そちらで再構成すると値が歪む ── 別物として両方載せる。
+    `window` は5分刻みの再構成用で、減衰ウィンドウ内の**全記事**。
+    `articles` は今回の取得ぶんで、`top_articles`（|score|上位）の材料。
+    後者は偏った標本なので、そちらで再構成すると値が歪む ── 別物として両方載せる。
+
+    `window` を渡さなければここで読み直す。handler は既に読んでいるので渡す。
     """
     series = read_jsonl(config.KEY_SERIES)
     cutoff = (now - timedelta(hours=config.PUBLIC_SERIES_HOURS)).strftime("%Y%m%dT%H%M")
@@ -105,7 +89,9 @@ def build_public(now: datetime, articles: list[dict]) -> None:
     top = sorted(articles, key=lambda a: abs(a["overall"]), reverse=True)
     top = top[: config.PUBLIC_TOP_ARTICLES]
 
-    window = window_articles(now)[-config.PUBLIC_WINDOW_ARTICLES:]
+    if window is None:
+        window = window_articles(now)
+    window = window[-config.PUBLIC_WINDOW_ARTICLES:]
 
     put_json(config.KEY_LATEST, {
         "schema_version": 2,

@@ -1,13 +1,13 @@
-# S3 JSONスキーマ定義
+# JSONスキーマ定義
 
-バケット構成（`S3_BUCKET` 配下）。
+置き場の構成。キーは S3 でも GitHub Actions（`DATA_DIR` 配下のパス）でも同じ。
 
 ```
 state/last_run.json                実行状態（time_from の起点）
 state/seen.json                    重複排除キャッシュ（48時間ローリング）
 history/sentiment.jsonl            市場センチメント時系列（追記）
 history/articles/YYYY-MM-DD.jsonl  採用記事の監査ログ（追記）
-public/latest.json                 SPAが5分ごとにfetchするファイル
+public/latest.json                 SPAが60分ごとにfetchするファイル
 observe/sources.json               source_domain の出現頻度（ホワイトリスト確定用）
 ```
 
@@ -25,7 +25,7 @@ observe/sources.json               source_domain の出現頻度（ホワイト�
 ```
 
 `requests_used_today` はクォータの自己管理用。無料枠25req/日を
-超えないよう Lambda 側でガードする。
+超えないよう実行側でガードする。
 
 ---
 
@@ -61,7 +61,9 @@ observe/sources.json               source_domain の出現頻度（ホワイト�
 }
 ```
 
-- `sentiment` — 主系列。時間減衰 × トピック relevance で加重平均
+- `sentiment` — 主系列。時間減衰 × トピック relevance で加重平均。
+  **対象はその時刻の減衰ウィンドウ（24時間）に入っている全記事**であって、
+  その回に取得した記事ではない（`store.window_articles()` の返り値）
 - `raw_mean` — 単純平均。**検証用の対照系列**。両者が乖離したときに
   減衰・relevance の設定を疑える
 - `top_tickers` — 言及銘柄の頻度。スコアには使わない。UI の色付け用
@@ -139,13 +141,27 @@ SPAが取得する唯一のファイル。
 実測ベースの概算で 1,400〜2,400件 × 約40バイト = **60〜100KB**、gzip で概ね1/4。
 60分に1回の取得なので許容範囲。上限は `config.PUBLIC_WINDOW_ARTICLES`（3,000件）。
 
-**重すぎると分かったときの代案**: 5分刻みの再構成を Lambda 側に移し、
-`series` を5分刻みで持つ。SPAは描くだけになるが、S3 の PUT サイズが増え、
+**重すぎると分かったときの代案**: 5分刻みの再構成を集計側に移し、
+`series` を5分刻みで持つ。SPAは描くだけになるが、書き込むサイズが増え、
 半減期を画面で変えて試すことはできなくなる。
 
 `window` の材料は `history/articles/` の当日＋前日ぶんを読み直して作る
 （`store.window_articles`）。今回の実行で採った記事だけでは直近1時間ぶんしか無く、
 24時間の曲線は引けないため。
+
+---
+
+### 集計の対象範囲（実装で1度間違えた箇所）
+
+`handler` が `score.aggregate()` に渡すのは、**記事を書き込んだあとに読み直した
+減衰ウィンドウ全体**でなければならない。その回に取得した記事を渡すと:
+
+- $S(t)$ の定義（24時間の加重平均）から外れる
+- 重複排除で新着が0件になった回に `sentiment` が null に落ち、画面から数字が消える
+
+`score.aggregate()` は渡されたリストをそのまま集計するだけで、24時間の切り出しは
+呼び出し側（`store.window_articles()`）の責任。テストで固定してある
+（`test_the_number_covers_the_whole_window_not_just_this_run`）。
 
 ---
 
