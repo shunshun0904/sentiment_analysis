@@ -84,19 +84,23 @@ endpoint: 'https://shunshun0904.github.io/sentiment_analysis/public/latest.json'
 GitHub Pages は `access-control-allow-origin: *` を返すので、**CORS の設定は要りません**
 （S3 のときに必要だった `AllowedOrigin` に相当するものが丸ごと不要）。
 
-### 6. 定期実行を入れる
+### 6. 定期実行
 
-`.github/workflows/collect.yml` の2行のコメントを外して push。
+**すでに有効です。** `.github/workflows/collect.yml`:
 
 ```yaml
 on:
   schedule:
-    - cron: '17 0-4,7-23 * * *'
+    - cron: '17 0,2,4,8,10,12,14,16,18,20,22 * * *'   # 2時間おき 11回/日
   workflow_dispatch:
 ```
 
-**1日たつまでチャートは右端だけの短い線です。** 減衰ウィンドウ24時間ぶんの記事が
-貯まって、はじめて本来の形になります。
+11回/日に対し無料枠は25req/日なので、**予備が14回**残ります。手で押して試す余地を
+残すためで、60分間隔(22回/日)にしていた時期は予備3回しかなく、プローブ1回と
+手動実行だけで枯れました。
+
+初回の取得は減衰ウィンドウと同じ24時間ぶんを一度に取るので、**1リクエストで
+チャートが埋まります**（1日待つ必要はありません）。
 
 ---
 
