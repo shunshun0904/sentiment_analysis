@@ -86,7 +86,10 @@ GitHub Pages は `access-control-allow-origin: *` を返すので、**CORS の�
 
 ### 6. 定期実行
 
-**すでに有効です。** `.github/workflows/collect.yml`:
+**いまは止めてあります**（本番は AWS 側）。切り替えるときは
+`.github/workflows/collect.yml` の `schedule` のコメントを外し、
+**先に AWS の EventBridge ルールを無効化してください** ── 同じ API キーの
+25req/日 を共有しているため、両方回すと枠を食い合います。 `.github/workflows/collect.yml`:
 
 ```yaml
 on:

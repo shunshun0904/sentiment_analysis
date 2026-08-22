@@ -20,7 +20,7 @@
 
 **保存先だけが違い、パイプラインは同じコードです**(`STORE_BACKEND` で切り替え)。
 
-| | GitHub Actions ← **いまこちらで運用** | AWS（撤収済み） |
+| | GitHub Actions（待機中） | AWS ← **いまこちらで運用** |
 |---|---|---|
 | 実行 | `schedule` cron | EventBridge |
 | 保存 | `data` ブランチ(git) | S3 |
@@ -63,13 +63,13 @@ $$S(t) = \frac{\sum_j d_j \cdot r_j \cdot s_j}{\sum_j d_j \cdot r_j},\qquad
 | `src/backend_s3.py` | 置き場: S3(AWS Lambda)。boto3 の import はここだけ |
 | `src/config.py` | 全パラメータ。**暫定値はここにコメントで明記してある** |
 | `web/index.html` | SPA(単一HTML、依存ライブラリなし)。5分刻みの再構築を持つ |
-| `.github/workflows/collect.yml` | **120分ごとの集計**(GitHub Actions) |
+| `.github/workflows/collect.yml` | 120分ごとの集計(GitHub Actions。schedule は停止中) |
 | `.github/workflows/probe.yml` | 手動。ランナーから叩けるか・無料枠か・時刻系を実測する |
 | `infra/template.yaml` | SAMテンプレート(バケット/Lambda/スケジュール/アラーム) |
 | `docs/SCHEMA.md` | **JSONスキーマの正**。画面と集計側の契約 |
 | `docs/handoff-v2.md` | 設計の経緯と確定事項。実測値はこちらが正 |
-| `docs/github-actions.md` | **GitHub Actions で動かす手順**(本番はこちら) |
-| `docs/aws-setup.md` | AWS で動かす手順。いまは使っていないが、戻せるように残してある |
+| `docs/aws-setup.md` | **AWS で動かす手順**(本番はこちら) |
+| `docs/github-actions.md` | GitHub Actions で動かす手順。いつでも切り替えられる |
 | `docs/cost.md` | 料金の内訳と、過去データを畳む方針 |
 | `tools/make_sample.py` | 鍵不要のサンプルデータ生成(ローカル確認用) |
 | `tools/probe_alphavantage.py` | APIを1回叩いて実際に何が返るか見る |
@@ -85,7 +85,7 @@ python3 -m http.server -d web 8000   # → http://localhost:8000/
 `tools/make_sample.py` は置き場を一時ディレクトリに向けるだけで、集計と
 `latest.json` の組み立ては**本番と同じコード**(`score` / `store`)を通す。
 
-## 配備 — GitHub Actions(本番)
+## 配備 — GitHub Actions(いまは止めてある)
 
 手順の全文は **`docs/github-actions.md`**。短く書くと:
 
@@ -94,14 +94,17 @@ python3 -m http.server -d web 8000   # → http://localhost:8000/
 2. Actions → "Probe Alpha Vantage" を手で1回押す   ← ここが分岐点
 3. Actions → "Collect market sentiment" を1回押す（data ブランチができる）
 4. Settings → Pages → Source を data ブランチ / (root) に
-5. 以降は2時間おきに自動（schedule は有効済み）
+5. collect.yml の schedule のコメントを外す
 ```
+
+⚠️ **AWS 側と同じ API キーの 25req/日 を共有している。** 両方を定期実行すると
+枠を食い合うので、切り替えるときは **先に AWS の EventBridge ルールを無効化する**。
 
 手順2で `premium` と言われたら無料枠では使えない。ランナーから到達できなければ
 IP で弾かれている(BGG が同じ経路を401で弾いていた前例がある)。
 どちらも Actions か AWS かに関係しない問題なので、**先に確かめる**。
 
-## 配備 — AWS(いまは使っていない)
+## 配備 — AWS(本番)
 
 手順の全文は **`docs/aws-setup.md`**(鍵の登録・予算アラート・停止の仕方まで)。
 短く書くと:
