@@ -10,15 +10,23 @@ Parameters:
     Type: String
     Default: /sentiment/alphavantage/api_key
     Description: Alpha Vantageキーを格納した SSM SecureString のパラメータ名
-  ScheduleExpression:
-    Type: String
-    Default: rate(120 minutes)
+  ScheduleMinutes:
+    Type: Number
+    Default: 120
+    MinValue: 2
     Description: >-
+      実行間隔(分)。**文字列で rate(...) を受け取らないこと。**
+      値に空白が入ると sam deploy --parameter-overrides が空白で切ってしまい、
+      "rate(120" だけが渡って EventBridge に
+      "Parameter ScheduleExpression is not valid" と拒否される(実際に起きた)。
+      数値だけ受け取って下で式に組み立てる。MinValue が 2 なのは
+      rate(1 minutes) が不正(単数形が要る)なため。
+
       無料プランは 25 req/day。60分間隔(22回/日)では予備が3回しか残らず、
       プローブと手動実行だけで枯れた(運用初日に実際に上限到達)。
-      120分間隔なら約12回/日で予備が13回残る。
+      120分なら約12回/日で予備が13回残る。
       画面の5分刻みは time_published から再構成しているので細かさは落ちない。
-      落ちるのは鮮度だけ(最大2時間)。短くするなら有料プラン前提。
+      落ちるのは鮮度だけ。短くするなら有料プラン前提。
   AllowedOrigin:
     Type: String
     Default: "*"
@@ -114,8 +122,9 @@ Resources:
           STORE_BACKEND: s3
           S3_BUCKET: !Ref BucketName
           AV_KEY_SSM: !Ref AlphaVantageKeyParam
-          # SPAのポーリング間隔。ScheduleExpression と揃えること
-          UPDATE_INTERVAL_SECONDS: "7200"
+          # 画面のポーリング間隔もこれ1つから決まる(config.py が60倍する)。
+          # 別々に渡すとずれる ── 実際に片方だけ更新されてずれた。
+          SCHEDULE_MINUTES: !Ref ScheduleMinutes
           LOG_LEVEL: INFO
       Policies:
         - S3CrudPolicy:
@@ -129,8 +138,8 @@ Resources:
         Tick:
           Type: Schedule
           Properties:
-            Schedule: !Ref ScheduleExpression
-            Description: 120分間隔のセンチメント更新
+            Schedule: !Sub "rate(${ScheduleMinutes} minutes)"
+            Description: !Sub "${ScheduleMinutes}分間隔のセンチメント更新"
 
   # ログは放っておくと無期限に残る。14日で足りる(障害の調査はその場でやる)
   CollectorLogs:
@@ -140,7 +149,7 @@ Resources:
       RetentionInDays: 14
 
   # 失敗が続いたら気づけるようにしておく(無料枠内)
-  # 60分間隔なので、3回失敗＝3時間止まっている。評価期間を4時間に合わせる。
+  # 120分間隔なので、3回失敗＝6時間止まっている。評価期間もそれに合わせる。
   ErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -151,7 +160,7 @@ Resources:
         - Name: FunctionName
           Value: !Ref CollectorFunction
       Statistic: Sum
-      Period: 14400
+      Period: 21600
       EvaluationPeriods: 1
       Threshold: 3
       ComparisonOperator: GreaterThanOrEqualToThreshold

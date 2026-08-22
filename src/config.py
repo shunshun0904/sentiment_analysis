@@ -115,5 +115,8 @@ PUBLIC_TOP_ARTICLES = 20
 PUBLIC_WINDOW_ARTICLES = 3000
 # 表示の刻み。SPA はこの間隔で系列を再構成する
 DISPLAY_STEP_MIN = 5
-# SPA のポーリング間隔（秒）。EventBridge のスケジュールと揃える
-UPDATE_INTERVAL_SECONDS = int(os.environ.get("UPDATE_INTERVAL_SECONDS", 7200))
+# 実行間隔（分）。**画面のポーリング間隔もここ1つから決まる。**
+# 別々の環境変数にしていたら、スケジュールだけ更新されて片方がずれた。
+# 揃えるのを人間の注意力に任せない。
+SCHEDULE_MINUTES = int(os.environ.get("SCHEDULE_MINUTES", 120))
+UPDATE_INTERVAL_SECONDS = SCHEDULE_MINUTES * 60

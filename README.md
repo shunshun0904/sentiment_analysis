@@ -77,7 +77,7 @@ $$S(t) = \frac{\sum_j d_j \cdot r_j \cdot s_j}{\sum_j d_j \cdot r_j},\qquad
 ## ローカルで動かす
 
 ```bash
-python3 -m pytest -q                 # 45件、AWS・ネットワーク不要
+python3 -m pytest -q                 # 46件、AWS・ネットワーク不要
 python3 tools/make_sample.py         # web/public/latest.json を生成
 python3 -m http.server -d web 8000   # → http://localhost:8000/
 ```
@@ -113,7 +113,7 @@ aws ssm put-parameter --name /sentiment/alphavantage/api_key \
 
 sam build -t infra/template.yaml
 sam deploy --guided --parameter-overrides \
-  BucketName=<一意な名前> AllowedOrigin=https://shunshun0904.github.io
+  BucketName=<一意な名前> AllowedOrigin=https://shunshun0904.github.io ScheduleMinutes=120
 ```
 
 出力の `LatestJsonURL` を、ホームページ側(`playbench`)の `data/sentiment.js` に書く。
@@ -135,11 +135,12 @@ aws s3 cp web/index.html s3://<バケット>/index.html --content-type "text/htm
 | `AV_API_KEY` | — | `fs` のときの鍵(Actions secrets から渡す) |
 | `S3_BUCKET` | — | `s3` のときのバケット |
 | `AV_KEY_SSM` | `/sentiment/alphavantage/api_key` | `s3` のときの SSM パス |
-| `UPDATE_INTERVAL_SECONDS` | `7200` | 画面側のポーリング間隔。スケジュールと揃える |
+| `SCHEDULE_MINUTES` | `120` | 実行間隔(分)。**画面のポーリング間隔もここから決まる** |
 
 | `config.py` の値 | 既定 | 備考 |
 |---|---|---|
 | `DAILY_QUOTA` / `SKIP_HOURS_UTC` | `25` / `{5, 6}` | 120分間隔で約12回/日 + 予備13回 |
+| `SCHEDULE_MINUTES` | `120` | 実行間隔。SAM では `ScheduleMinutes` パラメータから渡る |
 | `HALF_LIFE_HOURS` | `6.0` | **暫定値**。運用後に実際の値動きと比較して調整 |
 | `DECAY_WINDOW_HOURS` | `24` | これより古い記事は集計に含めない |
 | `MIN_TOPIC_RELEVANCE` | `0.30` | **暫定値** |

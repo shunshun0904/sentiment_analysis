@@ -63,8 +63,8 @@ jobs:
           STORE_BACKEND: fs
           DATA_DIR: data
           PYTHONPATH: src
-          # 画面側のポーリング間隔。上の cron と揃えること
-          UPDATE_INTERVAL_SECONDS: '7200'
+          # 実行間隔（分）。画面のポーリング間隔もここから決まる。上の cron と揃えること
+          SCHEDULE_MINUTES: '120'
         run: python3 -m handler
 
       # 単体SPAも同じ場所から配れば、data ブランチだけで完結する。

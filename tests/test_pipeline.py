@@ -566,3 +566,12 @@ def test_interval_leaves_real_headroom_in_the_daily_quota():
     assert spare >= runs_per_day, (
         f"1日{runs_per_day:.0f}回で予備{spare:.0f}回 — 手で触る余地が無い"
     )
+
+
+def test_polling_interval_cannot_drift_from_the_schedule():
+    """実行間隔と画面のポーリング間隔は、別々に渡せないこと。
+
+    以前は別々の環境変数で、スケジュールだけ更新されて片方がずれた
+    （60分間隔なのに画面には「120分ごと」と渡っていた）。
+    """
+    assert config.UPDATE_INTERVAL_SECONDS == config.SCHEDULE_MINUTES * 60

@@ -92,7 +92,8 @@ sam build -t infra/template.yaml
 sam deploy --guided \
   --parameter-overrides \
     BucketName=shun-market-sentiment \
-    AllowedOrigin=https://shunshun0904.github.io
+    AllowedOrigin=https://shunshun0904.github.io \
+    ScheduleMinutes=120
 ```
 
 `--guided` は初回だけ。スタック名(例 `market-sentiment`)とリージョンを聞かれます。
@@ -105,17 +106,23 @@ sam deploy --guided \
 
 ### スケジュールを変えるときの注意
 
-`ScheduleExpression` の既定は `rate(60 minutes)` です。**短くしても速くなりません。**
-無料枠は25リクエスト/日で、`src/config.py` の `DAILY_QUOTA` が上限に達した時点で
-Lambda 側がスキップするからです。短くするなら有料プランが前提になります。
-
-延ばすぶんには問題ありません。その場合は画面側と揃えるため、Lambda の
-`UPDATE_INTERVAL_SECONDS` も同じ値にしてください。
+**間隔は分の数値で渡します**(`ScheduleMinutes`)。既定は120。
 
 ```bash
-sam deploy --parameter-overrides ScheduleExpression="rate(120 minutes)"
-# テンプレートの UPDATE_INTERVAL_SECONDS も 7200 に直す
+sam deploy --parameter-overrides ScheduleMinutes=180
 ```
+
+`rate(...)` の文字列を受け取る形にしていたときは、**空白のせいで
+`--parameter-overrides` が値を途中で切り**、`rate(120` だけが渡って
+EventBridge に `Parameter ScheduleExpression is not valid` と拒否されました。
+数値なら空白が無いので起きません。
+
+画面のポーリング間隔もこの1つから決まります(`config.py` が60倍する)。
+別々に渡していたときは、実際にスケジュールだけ更新されてずれました。
+
+**短くしても速くなりません。** 無料枠は25リクエスト/日で、`DAILY_QUOTA` に
+達した時点でスキップされます。60分にすると22回/日で予備が3回しか残らず、
+プローブ1回と手動実行だけで枯れます(運用初日に実際に起きました)。
 
 ## 5. ホームページ側に URL を書く
 
