@@ -1,4 +1,9 @@
 """Alpha Vantage NEWS_SENTIMENT からの取得。"""
+
+# 注釈を文字列のまま扱う。`X | None` は Python 3.10 以降の書き方で、
+# 3.9 で import すると TypeError になる（AWS CloudShell の python3 が 3.9）。
+from __future__ import annotations
+
 import json
 import urllib.parse
 import urllib.request

@@ -4,6 +4,11 @@ AWS Lambda で使う。`infra/template.yaml` が STORE_BACKEND=s3 を渡す。
 boto3 の import はこのファイルに閉じてあるので、fs バックエンドで動かすときは
 boto3 が入っていなくてよい。
 """
+
+# 注釈を文字列のまま扱う。`X | None` は Python 3.10 以降の書き方で、
+# 3.9 で import すると TypeError になる（AWS CloudShell の python3 が 3.9）。
+from __future__ import annotations
+
 import boto3
 from botocore.exceptions import ClientError
 
