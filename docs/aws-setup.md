@@ -184,7 +184,7 @@ GuruFocus / Simply Wall Street / 24/7 Wall St. / TradingView など)が上位を
 | やりたいこと | やり方 |
 |---|---|
 | 一時停止(データは残す) | コンソール → EventBridge → ルール → 該当ルールを**無効化** |
-| 更新間隔を変える | `sam deploy --parameter-overrides ScheduleExpression="rate(120 minutes)"` |
+| 更新間隔を変える | `sam deploy --parameter-overrides ScheduleMinutes=180`(**分の数値**。空白のある文字列は渡せない) |
 | 全部消す | `sam delete --stack-name market-sentiment`(バケットは空にしてから) |
 
 `sam delete` はバケットが空でないと失敗します。先に `aws s3 rm s3://<バケット> --recursive` を。
