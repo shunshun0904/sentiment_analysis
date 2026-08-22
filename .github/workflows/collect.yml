@@ -18,7 +18,7 @@ name: Collect market sentiment
 
 on:
   # schedule:
-  #   - cron: '17 0-4,7-23 * * *'
+  #   - cron: '17 0,2,4,8,10,12,14,16,18,20,22 * * *'
   workflow_dispatch:
 
 permissions:
@@ -64,7 +64,7 @@ jobs:
           DATA_DIR: data
           PYTHONPATH: src
           # 画面側のポーリング間隔。上の cron と揃えること
-          UPDATE_INTERVAL_SECONDS: '3600'
+          UPDATE_INTERVAL_SECONDS: '7200'
         run: python3 -m handler
 
       # 単体SPAも同じ場所から配れば、data ブランチだけで完結する。

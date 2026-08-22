@@ -47,6 +47,21 @@ def lambda_handler(event, context):
     api_key = store.get_api_key()
     try:
         body = fetch.fetch_news(api_key, time_from, time_to)
+    except fetch.RateLimited as e:
+        # 上限に当たった。残りの回も同じ壁に当たるだけなので、
+        # 自前のカウンタを上限まで進めてその日は打ち止めにする。
+        # 翌日 quota_date が変われば自動的に戻る。
+        #
+        # こうしないと、AV 側の計数とこちらの計数がずれたとき
+        # （実際にずれた: こちら4回 / AV は上限到達）、残りの回を
+        # 全部無駄打ちして翌日ぶんまで削りかねない。
+        state.update({"quota_date": today,
+                      "requests_used_today": config.DAILY_QUOTA,
+                      "rate_limited_at": now.strftime("%Y%m%dT%H%M"),
+                      "last_run_utc": now.strftime("%Y%m%dT%H%M")})
+        store.put_json(config.KEY_LAST_RUN, state)
+        log.error("rate limited, standing down for today: %s", e)
+        return {"status": "skipped", "reason": "rate_limited"}
     except fetch.FetchError as e:
         # 失敗してもクォータは消費されている前提でカウントする
         state.update({"quota_date": today, "requests_used_today": used + 1,

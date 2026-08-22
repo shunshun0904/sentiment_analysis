@@ -12,11 +12,13 @@ Parameters:
     Description: Alpha Vantageキーを格納した SSM SecureString のパラメータ名
   ScheduleExpression:
     Type: String
-    Default: rate(60 minutes)
+    Default: rate(120 minutes)
     Description: >-
-      無料プランは 25 req/day。毎時=24回で予備が1回しか残らないため、
-      src/config.py の SKIP_HOURS_UTC で2時間ぶん間引いて 22回/日 に抑えている。
-      ここを短くしてもクォータで弾かれるだけなので、変えるなら有料プラン前提。
+      無料プランは 25 req/day。60分間隔(22回/日)では予備が3回しか残らず、
+      プローブと手動実行だけで枯れた(運用初日に実際に上限到達)。
+      120分間隔なら約12回/日で予備が13回残る。
+      画面の5分刻みは time_published から再構成しているので細かさは落ちない。
+      落ちるのは鮮度だけ(最大2時間)。短くするなら有料プラン前提。
   AllowedOrigin:
     Type: String
     Default: "*"
@@ -113,7 +115,7 @@ Resources:
           S3_BUCKET: !Ref BucketName
           AV_KEY_SSM: !Ref AlphaVantageKeyParam
           # SPAのポーリング間隔。ScheduleExpression と揃えること
-          UPDATE_INTERVAL_SECONDS: "3600"
+          UPDATE_INTERVAL_SECONDS: "7200"
           LOG_LEVEL: INFO
       Policies:
         - S3CrudPolicy:
@@ -128,7 +130,7 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: !Ref ScheduleExpression
-            Description: 60分間隔のセンチメント更新
+            Description: 120分間隔のセンチメント更新
 
   # ログは放っておくと無期限に残る。14日で足りる(障害の調査はその場でやる)
   CollectorLogs:

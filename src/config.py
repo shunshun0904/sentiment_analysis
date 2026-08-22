@@ -25,10 +25,20 @@ AV_TOPICS = "financial_markets"
 AV_LIMIT = 1000  # API上限
 
 # ---- クォータ管理 ----
-# 無料プラン 25 req/day。毎時実行すると24回で余裕が1回しかないため、
-# 米系ニュースが薄い時間帯を間引いて予備を3回確保する。
+# 無料プラン 25 req/day。
+#
+# 当初は60分間隔（22回/日 + 予備3回）にしていたが、**予備3回では足りなかった**。
+# プローブ1回と手動実行を1〜2回やるだけで枯れる。実際、運用初日に
+# 上限に当たった（こちらのカウンタは4回、AV 側は上限到達 ── 両者が
+# 食い違った理由は未解明。AV の日付境界が UTC でない可能性がある）。
+#
+# 120分間隔にして約12回/日にすると予備が13回残る。
+# **チャートの細かさは落ちない** ── 記事に time_published が付いていて、
+# 5分刻みの系列は画面側で再構成しているため。落ちるのは鮮度だけ（最大2時間）。
 DAILY_QUOTA = 25
-SKIP_HOURS_UTC = {5, 6}  # 22回/日 + 予備3回
+# 120分間隔だとこの間引きが効く回は多くて1回で、意味は薄い。
+# 枠が逼迫しなくなったので外してもよいが、米系ニュースが薄い時間帯なのは変わらない。
+SKIP_HOURS_UTC = {5, 6}
 # 失敗時のリトライはしない。クォータを消費して翌日分を削るリスクのほうが大きい。
 RETRY_ON_FAILURE = False
 
@@ -106,4 +116,4 @@ PUBLIC_WINDOW_ARTICLES = 3000
 # 表示の刻み。SPA はこの間隔で系列を再構成する
 DISPLAY_STEP_MIN = 5
 # SPA のポーリング間隔（秒）。EventBridge のスケジュールと揃える
-UPDATE_INTERVAL_SECONDS = int(os.environ.get("UPDATE_INTERVAL_SECONDS", 3600))
+UPDATE_INTERVAL_SECONDS = int(os.environ.get("UPDATE_INTERVAL_SECONDS", 7200))

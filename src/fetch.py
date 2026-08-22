@@ -20,6 +20,14 @@ class FetchError(Exception):
     pass
 
 
+class RateLimited(FetchError):
+    """日次上限に達したときだけ投げる。
+
+    これを普通の失敗と同じ扱いにすると、残りの回も同じ壁に当たりに行って
+    無駄に叩き続ける。呼び出し側でその日を打ち止めにするために区別する。
+    """
+
+
 def av_time(dt: datetime) -> str:
     """YYYYMMDDTHHMM 形式。API は分単位までしか受け付けない。"""
     return dt.strftime("%Y%m%dT%H%M")
@@ -71,7 +79,14 @@ def fetch_news(api_key: str, time_from: str, time_to: str) -> dict:
     # レート超過は "Note" / "Information"、パラメータ不正は "Error Message"。
     for key in ("Error Message", "Note", "Information"):
         if key in body:
-            raise FetchError(f"{key}: {body[key]}")
+            msg = str(body[key])
+            # 実際に返る文面（2026-08-22 実測）:
+            #   "...our standard API rate limit is 25 requests per day.
+            #    Please subscribe to any of the premium plans..."
+            low = msg.lower()
+            if "rate limit" in low or "requests per day" in low or "premium" in low:
+                raise RateLimited(f"{key}: {msg}")
+            raise FetchError(f"{key}: {msg}")
 
     if "feed" not in body:
         raise FetchError(f"unexpected response shape: {list(body.keys())}")

@@ -20,12 +20,19 @@ observe/sources.json               source_domain の出現頻度（ホワイト�
   "last_run_utc": "20260815T1405",
   "last_success_utc": "20260815T1405",
   "requests_used_today": 7,
-  "quota_date": "2026-08-15"
+  "quota_date": "2026-08-15",
+  "rate_limited_at": "20260822T0350"
 }
 ```
 
 `requests_used_today` はクォータの自己管理用。無料枠25req/日を
 超えないよう実行側でガードする。
+
+`rate_limited_at` は AV から上限到達を告げられた時刻。これが記録された日は
+`requests_used_today` を上限まで進めて打ち止めにする。
+**こちらの計数と AV の計数はずれうる** ── 2026-08-22 に、こちらが4回と数えている
+状態で AV が上限到達を返した（理由は未解明。AV の日付境界が UTC でない可能性）。
+ずれたまま叩き続けると翌日ぶんまで削るため、AV の言い分を優先する。
 
 ---
 

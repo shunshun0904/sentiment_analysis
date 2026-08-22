@@ -507,3 +507,62 @@ def test_cold_start_fills_the_whole_decay_window():
     assert config.COLD_START_LOOKBACK_HOURS == config.DECAY_WINDOW_HOURS
     time_from, _ = fetch.build_window(None, NOW)
     assert time_from == (NOW - timedelta(hours=24)).strftime("%Y%m%dT%H%M")
+
+
+def test_rate_limit_is_told_apart_from_other_errors():
+    """AV は HTTP 200 の本文で上限を伝えてくる。実際に返った文面で固定する。"""
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self):
+            return json.dumps({"Information":
+                "We have detected your API key as XXXX and our standard API rate "
+                "limit is 25 requests per day. Please subscribe to any of the "
+                "premium plans at https://www.alphavantage.co/premium/ to "
+                "instantly remove all daily rate limits."}).encode()
+
+    import unittest.mock as m
+    with m.patch.object(fetch.urllib.request, "urlopen", lambda *a, **kw: Resp()):
+        with pytest.raises(fetch.RateLimited):
+            fetch.fetch_news("k", "20260822T0100", "20260822T0300")
+
+
+def test_hitting_the_limit_stands_down_for_the_rest_of_the_day(monkeypatch):
+    """上限に当たったら、その日の残りは叩きに行かない。
+
+    こちらの計数と AV の計数はずれうる（実際にずれた）。ずれたまま
+    残りの回を叩き続けると、翌日ぶんまで削りかねない。
+    """
+    import handler
+
+    def limited(*a, **kw):
+        raise fetch.RateLimited("Information: ...rate limit is 25 requests per day...")
+
+    monkeypatch.setattr(store, "utcnow", lambda: NOW)
+    monkeypatch.setattr(store, "get_api_key", lambda: "test-key")
+    monkeypatch.setattr(fetch, "fetch_news", limited)
+
+    assert handler.lambda_handler({}, None)["reason"] == "rate_limited"
+    state = store.get_json(config.KEY_LAST_RUN)
+    assert state["requests_used_today"] == config.DAILY_QUOTA
+    assert state["rate_limited_at"] == NOW.strftime("%Y%m%dT%H%M")
+
+    # 次の回は API に触らずスキップする
+    def boom(*a, **kw):
+        raise AssertionError("打ち止めのはずなのに叩きに行った")
+
+    monkeypatch.setattr(fetch, "fetch_news", boom)
+    assert handler.lambda_handler({}, None)["reason"] == "quota"
+
+
+def test_interval_leaves_real_headroom_in_the_daily_quota():
+    """スケジュール間隔は、手で触る余地を残していること。
+
+    60分間隔(22回/日)では予備が3回しかなく、プローブ1回と手動実行1〜2回で
+    枯れた。予備は最低でも1日の実行回数と同程度は要る。
+    """
+    runs_per_day = 24 * 3600 / config.UPDATE_INTERVAL_SECONDS - len(config.SKIP_HOURS_UTC) / 2
+    spare = config.DAILY_QUOTA - runs_per_day
+    assert spare >= runs_per_day, (
+        f"1日{runs_per_day:.0f}回で予備{spare:.0f}回 — 手で触る余地が無い"
+    )
