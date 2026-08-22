@@ -29,9 +29,14 @@ import fetch  # noqa: E402
 
 
 def main() -> int:
-    key = os.environ.get("AV_API_KEY", "")
+    key = os.environ.get("AV_API_KEY", "").strip()
     if not key:
-        print("AV_API_KEY が空です。secrets.ALPHAVANTAGE_KEY を渡してください")
+        print("AV_API_KEY が空です。渡し方は環境によって違います:")
+        print("  GitHub Actions   env: AV_API_KEY: ${{ secrets.ALPHAVANTAGE_KEY }}")
+        print("  手元 / CloudShell  AV_API_KEY=\"$AV_KEY\" python3 tools/probe_alphavantage.py")
+        print("")
+        print("シェル変数が空になっていることが多いので、まず長さを確認してください:")
+        print('  echo "${#AV_KEY} 文字"    → 0 なら read が値を受け取れていない')
         return 2
 
     now = datetime.now(timezone.utc)
