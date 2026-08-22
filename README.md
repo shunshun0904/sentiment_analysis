@@ -4,9 +4,9 @@
 「今の空気」を可視化する。
 
 ```
-60分に1回  取得 → 重複排除 → ソースフィルタ → 集計 → 保存
-      └→  public/latest.json                ← 画面が60分ごとにfetch
-          history/sentiment.jsonl           ← 毎時の集計(残す)
+120分に1回 取得 → 重複排除 → ソースフィルタ → 集計 → 保存
+      └→  public/latest.json                ← 画面が120分ごとにfetch
+          history/sentiment.jsonl           ← 実行ごとの集計(残す)
           history/articles/YYYY-MM-DD.jsonl ← 記事の監査ログ
           state/last_run.json / seen.json   ← 実行状態
           observe/sources.json              ← ソース分布
@@ -37,17 +37,17 @@ Actions の遅延・欠落は設計が吸収する。`fetch.build_window()` が
 (`AV_LIMIT` は1000。実測レートは時間帯で開きがあり、UTC深夜で約12件/時、
 市場が動く時間帯では桁が上がる ── 最悪でも数時間ぶんは1リクエストに収まる)。
 
-## 更新は60分、表示は5分刻み
+## 更新は120分、表示は5分刻み
 
 **ポーリング頻度は遅延であって、チャートの時間解像度ではない。**
-記事には `time_published` が付くので、60分に1回まとめて取得しても、
-5分刻みの系列はブラウザ側で再構築できる。失うのは最大60分の鮮度だけ。
+記事には `time_published` が付くので、120分に1回まとめて取得しても、
+5分刻みの系列はブラウザ側で再構築できる。失うのは最大120分の鮮度だけ。
 
 $$S(t) = \frac{\sum_j d_j \cdot r_j \cdot s_j}{\sum_j d_j \cdot r_j},\qquad
   d_j = 0.5^{\Delta t / T_{1/2}}$$
 
 再構築は `web/index.html` の `reconstruct()` / `pointAt()`。
-サーバ側の毎時集計(`series`)と突き合わせる自己点検を画面に出しており、
+サーバ側の集計(`series`)と突き合わせる自己点検を画面に出しており、
 両者の差が大きければ実装がずれている(現状の残差は5分の格子ぶんのみ)。
 
 ## 構成
@@ -63,7 +63,7 @@ $$S(t) = \frac{\sum_j d_j \cdot r_j \cdot s_j}{\sum_j d_j \cdot r_j},\qquad
 | `src/backend_s3.py` | 置き場: S3(AWS Lambda)。boto3 の import はここだけ |
 | `src/config.py` | 全パラメータ。**暫定値はここにコメントで明記してある** |
 | `web/index.html` | SPA(単一HTML、依存ライブラリなし)。5分刻みの再構築を持つ |
-| `.github/workflows/collect.yml` | **60分ごとの集計**(GitHub Actions) |
+| `.github/workflows/collect.yml` | **120分ごとの集計**(GitHub Actions) |
 | `.github/workflows/probe.yml` | 手動。ランナーから叩けるか・無料枠か・時刻系を実測する |
 | `infra/template.yaml` | SAMテンプレート(バケット/Lambda/スケジュール/アラーム) |
 | `docs/SCHEMA.md` | **JSONスキーマの正**。画面と集計側の契約 |
@@ -77,7 +77,7 @@ $$S(t) = \frac{\sum_j d_j \cdot r_j \cdot s_j}{\sum_j d_j \cdot r_j},\qquad
 ## ローカルで動かす
 
 ```bash
-python3 -m pytest -q                 # 39件、AWS・ネットワーク不要
+python3 -m pytest -q                 # 45件、AWS・ネットワーク不要
 python3 tools/make_sample.py         # web/public/latest.json を生成
 python3 -m http.server -d web 8000   # → http://localhost:8000/
 ```
@@ -135,7 +135,7 @@ aws s3 cp web/index.html s3://<バケット>/index.html --content-type "text/htm
 | `AV_API_KEY` | — | `fs` のときの鍵(Actions secrets から渡す) |
 | `S3_BUCKET` | — | `s3` のときのバケット |
 | `AV_KEY_SSM` | `/sentiment/alphavantage/api_key` | `s3` のときの SSM パス |
-| `UPDATE_INTERVAL_SECONDS` | `3600` | 画面側のポーリング間隔。スケジュールと揃える |
+| `UPDATE_INTERVAL_SECONDS` | `7200` | 画面側のポーリング間隔。スケジュールと揃える |
 
 | `config.py` の値 | 既定 | 備考 |
 |---|---|---|
@@ -169,13 +169,13 @@ aws s3 cp web/index.html s3://<バケット>/index.html --content-type "text/htm
 **GitHub Actions なら0円**(public リポジトリは分数無制限)。ただしリポジトリは
 `latest.json` の毎時書き換えで年32〜128MB 太る ── 畳み方は `docs/github-actions.md`。
 
-AWS の場合は月2〜4円。60分間隔なので v1(5分間隔)の想定より1桁小さい。
+AWS の場合は月1〜2円。120分間隔なので v1(5分間隔)の想定より2桁小さい。
 **主役はストレージではなくPUTリクエスト**で、1年ぶんのストレージは月0.04円。
 内訳と根拠は `docs/cost.md`。
 
 | 置き場 | 粒度 | 保持 |
 |---|---|---|
-| `history/sentiment.jsonl` | 毎時1点 | 消さない。10年で約15MB |
+| `history/sentiment.jsonl` | 実行ごと1点 | 消さない。10年で約8MB |
 | `history/articles/YYYY-MM-DD.jsonl` | 記事1件1行 | 400日で自動削除(`ArticleRetentionDays`) |
 | `state/` | 実行状態 | 7日で自動削除 |
 
