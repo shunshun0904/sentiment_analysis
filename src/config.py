@@ -6,8 +6,22 @@ AV_ENDPOINT = "https://www.alphavantage.co/query"
 AV_API_KEY_SSM_PATH = os.environ.get("AV_KEY_SSM", "/sentiment/alphavantage/api_key")
 
 # 市場全体のムードを対象にするため topics 軸で取得する。
-# tickers パラメータは AND 条件のためバスケット取得には使えない（実測確認済み 2026-08-15）。
-AV_TOPICS = "financial_markets,economy_macro,economy_monetary"
+#
+# ⚠️ topics はカンマ区切りでも **AND** で、OR ではない（実測 2026-08-22）。
+#    tickers が AND なのは既知だったが、topics も同じだった。
+#    3トピックを並べると「3つすべてに該当する記事」しか返らず、実質空になる:
+#
+#      financial_markets のみ           最新 0.4時間前 / 約12件/時
+#      3トピック指定（AND）              最新 8.4時間前 / 約0.7件/時
+#
+#    実際にこれで4回連続 0件になった。60分窓では必ず空になる。
+#    複数トピックを OR で取るには1トピック1リクエストが要り、
+#    25req/日 の枠では成立しない。よって1トピックに絞る。
+#
+# なお economy_macro / economy_monetary を捨てたわけではない。
+# financial_markets で取った記事にもこれらの topic は付いてくるので、
+# 下の RELEVANCE_TOPICS で重みとして拾っている。
+AV_TOPICS = "financial_markets"
 AV_LIMIT = 1000  # API上限
 
 # ---- クォータ管理 ----
@@ -20,7 +34,10 @@ RETRY_ON_FAILURE = False
 
 # ---- 取得ウィンドウ ----
 LOOKBACK_BUFFER_MIN = 15          # 記事の遅延到着を拾うための遡り
-COLD_START_LOOKBACK_HOURS = 2     # last_run が無いとき
+# last_run が無いとき（初回・state を消したとき）。
+# 減衰ウィンドウと同じ24時間ぶんを一気に取り、初回から曲線が引ける状態にする。
+# これより古い記事は dedup 側で落ちるので、広げても無駄にはならない。
+COLD_START_LOOKBACK_HOURS = 24
 
 # ---- 重複排除 ----
 SEEN_RETENTION_HOURS = 48

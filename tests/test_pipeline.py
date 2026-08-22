@@ -465,3 +465,45 @@ def test_series_rows_are_the_window_aggregate(monkeypatch):
     assert row["n_articles"] == 2
     # 10時間前の記事は減衰で軽くなるので、単純平均より新しい側に寄る
     assert row["sentiment"] > row["raw_mean"]
+
+
+def test_topics_is_a_single_topic():
+    """topics はカンマ区切りでも AND。複数並べると実質空になる。
+
+    実測（2026-08-22）:
+      financial_markets のみ    最新 0.4時間前 / 約12件/時
+      3トピック（AND）           最新 8.4時間前 / 約0.7件/時
+
+    60分窓では後者は必ず0件になり、実際に4回連続で0件を記録した。
+    OR で取るには1トピック1リクエストが必要で、25req/日 では成立しない。
+    """
+    assert "," not in config.AV_TOPICS, (
+        f"AV_TOPICS={config.AV_TOPICS!r} — カンマは AND。1トピックに絞ること"
+    )
+
+
+def test_relevance_still_covers_the_macro_topics():
+    """取得は1トピックでも、重みは市場系3トピックの最大で取る。
+
+    financial_markets で取った記事にも economy_macro / economy_monetary は
+    付いてくるので、金融政策の記事が軽くならないようにここで拾う。
+    """
+    assert config.AV_TOPICS in config.RELEVANCE_TOPICS
+    assert {"economy_macro", "economy_monetary"} <= config.RELEVANCE_TOPICS
+
+    fed = {
+        "url": "https://example.com/fed", "time_published": av(NOW),
+        "source_domain": "reuters.com", "title": "Fed holds rates",
+        "overall_sentiment_score": 0.2,
+        "topics": [{"topic": "financial_markets", "relevance_score": "0.35"},
+                   {"topic": "economy_monetary", "relevance_score": "0.94"}],
+        "ticker_sentiment": [],
+    }
+    assert dedup.trim(fed)["rel"] == 0.94
+
+
+def test_cold_start_fills_the_whole_decay_window():
+    """初回は減衰ウィンドウと同じ幅を取る。1〜2時間だと曲線が引けない。"""
+    assert config.COLD_START_LOOKBACK_HOURS == config.DECAY_WINDOW_HOURS
+    time_from, _ = fetch.build_window(None, NOW)
+    assert time_from == (NOW - timedelta(hours=24)).strftime("%Y%m%dT%H%M")

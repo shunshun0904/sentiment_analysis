@@ -61,8 +61,16 @@ def main() -> int:
     print(f"   items {body.get('items')} / feed {len(feed)} 件")
 
     if not feed:
-        print("   ⚠️ 0件。窓が狭いか、その時間帯に記事が無い。判定は保留")
-        return 0
+        # ここを成功で返してはいけない。呼び出し側（配備スクリプト・ワークフロー）は
+        # 終了コードでゲートしているので、0件を通すと「動いているのに何も取れない」
+        # 状態のまま配備が進む。実際に一度そうなった。
+        print("   ❌ 0件。API は応答したが、この窓には記事が無い。")
+        print("      考えられるのは3つ ── いずれも窓の指定の問題:")
+        print("        a) time_published が UTC でない（US/Eastern なら窓が未来を指す）")
+        print("        b) 無料枠のニュース配信が遅れていて、直近2時間には何も無い")
+        print("        c) その時間帯に本当に記事が無い（週末・祝日の深夜など）")
+        print("      time_from を付けずに叩き直して、最新記事が何分前かを見ること")
+        return 1
 
     newest = feed[0]
     published = fetch.parse_published(newest["time_published"])
