@@ -102,7 +102,10 @@ KEY_SOURCES = "observe/sources.json"
 PREFIX_ARTICLES = "history/articles/"
 
 PUBLIC_SERIES_HOURS = 72
-PUBLIC_TOP_ARTICLES = 20
+# 記事一覧に載せる件数。**公開の新しい順**に選ぶ。
+# 以前は |score| の大きい順だったが、両端に偏った標本になり
+# 「何が効いているか」を読み違えやすいのでやめた。
+PUBLIC_RECENT_ARTICLES = 20
 
 # ---- SPA へ渡す再構成用データ ----
 # 「取得は60分間隔でも表示は5分刻みで再構築する」ためには、SPA 側に

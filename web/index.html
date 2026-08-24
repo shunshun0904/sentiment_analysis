@@ -152,7 +152,7 @@
   </section>
 
   <section class="card" id="panel-articles" hidden aria-labelledby="h-articles">
-    <h2 id="h-articles">直近の採用記事（スコアの大きい順）</h2>
+    <h2 id="h-articles">直近の記事（公開の新しい順）</h2>
     <ol class="articles" id="articles"></ol>
     <p class="note" id="source-note"></p>
   </section>
@@ -533,7 +533,8 @@ function renderTable(series) {
 function renderArticles() {
   const list = document.getElementById("articles");
   list.replaceChildren();
-  for (const a of state.top_articles || []) {
+  // 旧名 top_articles でも読めるようにしておく（配備が前後しても消えない）
+  for (const a of state.recent_articles || state.top_articles || []) {
     const item = document.createElement("li");
 
     const score = document.createElement("div");
@@ -570,9 +571,9 @@ function renderArticles() {
   const tickers = state.top_tickers || [];
   note.replaceChildren();
   note.append(document.createTextNode(
-    "直近の取得ぶんから、スコアの大きい順に載せています（上の値は24時間ぶんの加重平均なので、"
-    + "この一覧がそのまま内訳ではありません）。スコアは Alpha Vantage の overall_sentiment_score。"
-    + "相場の予測ではなく、報道の論調です。"));
+    "直近24時間の記事から、公開の新しい順に20件です（上の値はこの24時間ぶん全部の"
+    + "加重平均なので、この一覧は先頭だけの抜粋です）。スコアは Alpha Vantage の "
+    + "overall_sentiment_score。相場の予測ではなく、報道の論調です。"));
   if (tickers.length) {
     const box = document.createElement("span");
     box.className = "tickers";

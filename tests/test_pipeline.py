@@ -282,7 +282,7 @@ def test_build_public_carries_everything_the_spa_needs():
     # 5分刻みの再構成には、偏りのない窓の全記事が要る
     assert [a["s"] for a in payload["window"]] == [-0.2, 0.5]
     assert set(payload["window"][0]) == {"t", "s", "r"}
-    assert payload["top_articles"][0]["title"]
+    assert payload["recent_articles"][0]["title"]
 
 
 def test_build_public_caps_the_window(monkeypatch):
@@ -439,8 +439,8 @@ def test_the_number_covers_the_whole_window_not_just_this_run(monkeypatch):
     payload = store.get_json(config.KEY_LATEST)
     assert payload["current"] is not None
     assert payload["n_articles"] == 1
-    # 今回の取得ぶんは0件なので、記事一覧は空になる（これは正しい）
-    assert payload["top_articles"] == []
+    # 新着が0件でも、一覧はウィンドウから作るので空にならない
+    assert len(payload["recent_articles"]) == 1
 
 
 def test_series_rows_are_the_window_aggregate(monkeypatch):
@@ -601,3 +601,39 @@ def test_polling_interval_cannot_drift_from_the_schedule():
     （60分間隔なのに画面には「120分ごと」と渡っていた）。
     """
     assert config.UPDATE_INTERVAL_SECONDS == config.SCHEDULE_MINUTES * 60
+
+
+def test_article_list_is_newest_first_from_the_whole_window():
+    """記事一覧は、公開の新しい順であること。
+
+    以前は |score| の大きい順だった。それは両端に偏った標本で、
+    「いま何が効いているか」を読み違えやすい。
+
+    材料もウィンドウ全体にしてある。今回の取得ぶんだけだと、重複排除で
+    新着が0件になった回に一覧が丸ごと空になる。
+    """
+    day = NOW.date().isoformat()
+    store.append_jsonl(f"{config.PREFIX_ARTICLES}{day}.jsonl", [
+        article(5, 0.90, url="https://example.com/old-big", title="Old but loud"),
+        article(3, 0.05, url="https://example.com/mid", title="Middling"),
+        article(1, -0.02, url="https://example.com/new-quiet", title="New and quiet"),
+    ])
+
+    store.build_public(NOW, [])
+    got = store.get_json(config.KEY_LATEST)["recent_articles"]
+
+    assert [a["title"] for a in got] == ["New and quiet", "Middling", "Old but loud"]
+    # |score| 順なら "Old but loud" が先頭に来る。来ていないことが要点
+    assert got[0]["score"] == -0.02
+
+
+def test_article_list_is_capped_and_keeps_the_newest():
+    monkeypatch_cap = config.PUBLIC_RECENT_ARTICLES
+    day = NOW.date().isoformat()
+    store.append_jsonl(f"{config.PREFIX_ARTICLES}{day}.jsonl",
+                       [article(h, 0.1, url=f"https://example.com/{h}", title=f"T{h}")
+                        for h in range(1, monkeypatch_cap + 6)])
+    store.build_public(NOW, [])
+    got = store.get_json(config.KEY_LATEST)["recent_articles"]
+    assert len(got) == monkeypatch_cap
+    assert got[0]["title"] == "T1"          # いちばん新しい（1時間前）

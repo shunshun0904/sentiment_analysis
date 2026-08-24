@@ -80,9 +80,9 @@ def window_articles(now: datetime) -> list[dict]:
 def build_public(now: datetime, articles: list[dict], window: list[dict] | None = None) -> None:
     """SPA が取得する latest.json を生成する。
 
-    `window` は5分刻みの再構成用で、減衰ウィンドウ内の**全記事**。
-    `articles` は今回の取得ぶんで、`top_articles`（|score|上位）の材料。
-    後者は偏った標本なので、そちらで再構成すると値が歪む ── 別物として両方載せる。
+    `window` は減衰ウィンドウ内の**全記事**で、再構成と記事一覧の両方の材料。
+    `articles` は今回の取得ぶん。いまは使っていないが、handler の呼び出し形を
+    変えないために受けたままにしてある。
 
     `window` を渡さなければここで読み直す。handler は既に読んでいるので渡す。
     """
@@ -91,12 +91,18 @@ def build_public(now: datetime, articles: list[dict], window: list[dict] | None 
     series = [r for r in series if r["t"] >= cutoff]
 
     latest = series[-1] if series else {}
-    top = sorted(articles, key=lambda a: abs(a["overall"]), reverse=True)
-    top = top[: config.PUBLIC_TOP_ARTICLES]
 
     if window is None:
         window = window_articles(now)
     window = window[-config.PUBLIC_WINDOW_ARTICLES:]
+
+    # 記事一覧は**公開の新しい順**。以前は |score| の大きい順にしていたが、
+    # それは両端に偏った標本で、「何が効いているか」を読み違えやすい。
+    #
+    # 材料は今回の取得ぶんではなくウィンドウ全体にしてある。取得ぶんだと、
+    # 重複排除で新着0件になった回に一覧が丸ごと空になる（実際に起きた）。
+    recent = sorted(window, key=lambda a: a["t"], reverse=True)
+    recent = recent[: config.PUBLIC_RECENT_ARTICLES]
 
     put_json(config.KEY_LATEST, {
         "schema_version": 2,
@@ -121,15 +127,22 @@ def build_public(now: datetime, articles: list[dict], window: list[dict] | None 
             "use_relevance": config.USE_TOPIC_RELEVANCE,
             "update_interval_seconds": config.UPDATE_INTERVAL_SECONDS,
         },
-        # 5分刻み再構成用。t=時刻, s=スコア, r=relevance のみに削る
+        # 再構成用。t=時刻, s=スコア, r=relevance のみに削る
         "window": [
             {"t": a["t"], "s": round(float(a["overall"]), 4), "r": round(float(a.get("rel", 1.0)), 3)}
             for a in window
         ],
+        # 公開の新しい順。旧名 top_articles でも読めるよう、当面は両方入れる
+        # （画面側と集計側の配備が前後しても一覧が消えないように）。
+        "recent_articles": [
+            {"title": a["title"], "source": a["source"], "url": a["url"],
+             "score": a["overall"], "t": a["t"]}
+            for a in recent
+        ],
         "top_articles": [
             {"title": a["title"], "source": a["source"], "url": a["url"],
              "score": a["overall"], "t": a["t"]}
-            for a in top
+            for a in recent
         ],
     })
 

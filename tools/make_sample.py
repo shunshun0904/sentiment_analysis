@@ -104,7 +104,7 @@ def main() -> None:
     print(f"  current={payload['current']} raw_mean={payload['raw_mean']} "
           f"n={payload['n_articles']}")
     print(f"  series={len(payload['series'])}点 window={len(payload['window'])}件 "
-          f"top_articles={len(payload['top_articles'])}件")
+          f"recent_articles={len(payload['recent_articles'])}件")
     print(f"  サイズ {size_kb:.1f}KB（gzip で概ね1/4）")
 
 
