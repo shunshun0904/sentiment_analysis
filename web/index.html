@@ -196,15 +196,16 @@ const fmtStamp = (ms) =>
 const fmtScore = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(3);
 const toneOf = (v) => (v > 0.02 ? "var(--bull)" : v < -0.02 ? "var(--bear)" : "var(--axis)");
 
-/* ---------- 5分刻みの再構成 ----------
-   Lambda は60分に1回しか動かないが、記事には発行時刻が付いている。
+/* ---------- 系列の再構成 ----------
+   刻みは params.step_min（いまは取得と同じ60分）。記事には発行時刻が付いているので、
+   任意の時刻について計算できる ── 刻みは取得間隔に縛られない。
    S(t) = Σ d_j(t)·r_j·s_j / Σ d_j(t)·r_j,  d_j(t) = 0.5^((t−t_j)/半減期)
    を任意の t について計算できるので、表示の刻みは取得間隔に縛られない。
    失うのは最大60分の鮮度だけ。 */
 function reconstruct(window, params, endMs) {
   const halfLife = (params.half_life_hours || 6) * 3600e3;
   const spanMs = (params.window_hours || 24) * 3600e3;
-  const stepMs = (params.step_min || 5) * 60e3;
+  const stepMs = (params.step_min || 60) * 60e3;
   const useRel = params.use_relevance !== false;
 
   const pts = [];
@@ -330,7 +331,7 @@ function paint() {
     `記事の発行時刻から、いまこの瞬間の値を計算しています（取得は${Math.round((p.update_interval_seconds ?? 3600) / 60)}分ごと、`
     + `半減期${p.half_life_hours ?? 6}時間）。`;
   document.getElementById("chart-note").textContent =
-    ` ・${p.step_min ?? 5}分刻みに再構成`;
+    ` ・${p.step_min ?? 60}分刻みに再構成`;
 
   drawChart(series);
   renderTable(series);
@@ -344,17 +345,23 @@ function checkAgainstServer(series) {
   const server = (state.series || []).filter((r) => r.v != null);
   if (!server.length || !state.window.length) { note.textContent = ""; return; }
 
+  // 表示のグリッドに寄せて比べると、格子のずれがそのまま差になる。
+  // 刻みを60分にしたら、サーバ側の時刻がどの格子にも近くなくなって照合が止まった。
+  // グリッドは使わず、サーバが集計した時刻そのもので計算し直して比べる。
+  const p = state.params || {};
+  const halfLife = (p.half_life_hours ?? 6) * 3600e3;
+  const spanMs = (p.window_hours ?? 24) * 3600e3;
+  const useRel = p.use_relevance !== false;
+
   let worst = 0, compared = 0;
   for (const r of server) {
-    const ms = parseAV(r.t);
-    const mine = series.reduce((best, s) =>
-      (s.v != null && Math.abs(s.t - ms) < Math.abs(best.t - ms) ? s : best), series[0]);
-    if (mine.v == null || Math.abs(mine.t - ms) > 5 * 60e3) continue;
+    const mine = pointAt(state.window, parseAV(r.t), halfLife, spanMs, useRel);
+    if (mine.v == null) continue;
     worst = Math.max(worst, Math.abs(mine.v - r.v));
     compared += 1;
   }
   note.textContent = compared
-    ? `サーバ側の毎時集計と照合: ${compared}点、最大差 ${worst.toFixed(4)}`
+    ? `サーバ側の集計と照合: ${compared}点、最大差 ${worst.toFixed(4)}`
     : "";
 }
 
@@ -505,7 +512,7 @@ function renderTable(series) {
   const body = document.getElementById("series-table").querySelector("tbody");
   body.replaceChildren();
   // 表は読めることが目的なので1時間刻みに間引く
-  const stepMin = state.params?.step_min ?? 5;
+  const stepMin = state.params?.step_min ?? 60;
   const every = Math.max(1, Math.round(60 / stepMin));
   series.filter((_, i, arr) => i % every === 0 || i === arr.length - 1).forEach((s) => {
     const row = document.createElement("tr");

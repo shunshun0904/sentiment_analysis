@@ -555,17 +555,43 @@ def test_hitting_the_limit_stands_down_for_the_rest_of_the_day(monkeypatch):
     assert handler.lambda_handler({}, None)["reason"] == "quota"
 
 
-def test_interval_leaves_real_headroom_in_the_daily_quota():
-    """スケジュール間隔は、手で触る余地を残していること。
+def scheduled_runs_per_day() -> float:
+    """間引きを考慮した1日の実行回数。
 
-    60分間隔(22回/日)では予備が3回しかなく、プローブ1回と手動実行1〜2回で
-    枯れた。予備は最低でも1日の実行回数と同程度は要る。
+    間引き時間に当たる回数は、間隔によって変わる（60分なら SKIP_HOURS の数だけ、
+    120分なら約半分）。時間あたりの実行回数 × 間引き時間数 で数える。
     """
-    runs_per_day = 24 * 3600 / config.UPDATE_INTERVAL_SECONDS - len(config.SKIP_HOURS_UTC) / 2
-    spare = config.DAILY_QUOTA - runs_per_day
-    assert spare >= runs_per_day, (
-        f"1日{runs_per_day:.0f}回で予備{spare:.0f}回 — 手で触る余地が無い"
-    )
+    per_hour = 60 / config.SCHEDULE_MINUTES
+    return 24 * per_hour - len(config.SKIP_HOURS_UTC) * per_hour
+
+
+def test_schedule_fits_the_daily_quota_with_room_to_touch_it():
+    """スケジュールがクォータを食い切らず、手で触る余地を残していること。
+
+    以前はここで「予備 ≧ 1日の実行回数」を要求していた。**その規則は外した** ──
+    無料枠25回/日では、その条件は間隔120分以上でしか満たせず、
+    「取得は60分おき」という運用方針と両立しないため。
+
+    代わりに残したのは、① 枠を食い切らないこと ② 手動実行のぶんが最低2回残ること。
+    薄さを補うのは仕掛けのほう:
+      - 上限に当たった日は打ち止めにする（test_hitting_the_limit_stands_down…）
+      - 失敗してもリトライしない（RETRY_ON_FAILURE=False）
+    余裕が要るときは SKIP_HOURS_UTC を広げるのがいちばん軽い。
+    """
+    runs = scheduled_runs_per_day()
+    spare = config.DAILY_QUOTA - runs
+    assert runs < config.DAILY_QUOTA, f"1日{runs:.0f}回で枠{config.DAILY_QUOTA}回を超えている"
+    assert spare >= 2, f"1日{runs:.0f}回で予備{spare:.0f}回 — 手で1回も試せない"
+
+
+def test_display_step_matches_the_collection_interval():
+    """表示の刻みが、新しい情報が入る速さを上回っていないこと。
+
+    5分刻みでも計算は正しい（各点で窓の全記事を実際に計算し直している）が、
+    情報が60分に1回しか入らないのに5分刻みで描くと、
+    細かさが情報量を上回って見える。揃えるという判断。
+    """
+    assert config.DISPLAY_STEP_MIN == config.SCHEDULE_MINUTES
 
 
 def test_polling_interval_cannot_drift_from_the_schedule():

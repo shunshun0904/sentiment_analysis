@@ -9,9 +9,10 @@ name: Collect market sentiment
 #
 # 手で押すぶんには安全（workflow_dispatch）。1回で1リクエスト使う。
 #
-# 2時間おきに11回/日。無料枠 25req/日 に対して予備が14回残る想定。
-# 60分間隔(22回/日)にしていた時期は予備3回しかなく、プローブ1回と手動実行だけで
-# 枯れた（AWS 運用の初日に実際に上限到達）。
+# 60分おきに22回/日（UTC 5,6時は間引く）。無料枠25req/日に対し予備は3回。
+# プローブ1回と手動実行1回で枯れる薄さで、実際に運用初日に上限到達した。
+# それでも60分なのは鮮度を優先する判断。上限に当たった日は handler が
+# 打ち止めにするので、翌日には自動で戻る。
 #
 # 毎正時を避けて :17 にしてある。GitHub の schedule はベストエフォートで、
 # 毎正時は 5〜30分の遅延が普通、高負荷時は run そのものが落ちることもある。
@@ -25,7 +26,7 @@ name: Collect market sentiment
 
 on:
   # schedule:
-  #   - cron: '17 0,2,4,8,10,12,14,16,18,20,22 * * *'
+  #   - cron: '17 0-4,7-23 * * *'
   workflow_dispatch:
 
 permissions:
@@ -71,7 +72,7 @@ jobs:
           DATA_DIR: data
           PYTHONPATH: src
           # 実行間隔（分）。画面のポーリング間隔もここから決まる。上の cron と揃えること
-          SCHEDULE_MINUTES: '120'
+          SCHEDULE_MINUTES: '60'
         run: python3 -m handler
 
       # 単体SPAも同じ場所から配れば、data ブランチだけで完結する。

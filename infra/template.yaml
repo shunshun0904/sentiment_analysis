@@ -12,7 +12,7 @@ Parameters:
     Description: Alpha Vantageキーを格納した SSM SecureString のパラメータ名
   ScheduleMinutes:
     Type: Number
-    Default: 120
+    Default: 60
     MinValue: 2
     Description: >-
       実行間隔(分)。**文字列で rate(...) を受け取らないこと。**
@@ -22,11 +22,11 @@ Parameters:
       数値だけ受け取って下で式に組み立てる。MinValue が 2 なのは
       rate(1 minutes) が不正(単数形が要る)なため。
 
-      無料プランは 25 req/day。60分間隔(22回/日)では予備が3回しか残らず、
-      プローブと手動実行だけで枯れた(運用初日に実際に上限到達)。
-      120分なら約12回/日で予備が13回残る。
-      画面の5分刻みは time_published から再構成しているので細かさは落ちない。
-      落ちるのは鮮度だけ。短くするなら有料プラン前提。
+      無料プランは 25 req/day。60分間隔は 22回/日(間引き2時間を除く)で、
+      予備が3回しか残らない ── プローブと手動実行だけで枯れる
+      (運用初日に実際に上限到達)。それでも60分にしているのは鮮度を優先する判断。
+      上限に当たった日は handler が打ち止めにするので、翌日には自動で戻る。
+      余裕が欲しければ src/config.py の SKIP_HOURS_UTC を広げるのが軽い。
   AllowedOrigin:
     Type: String
     Default: "*"
@@ -149,7 +149,7 @@ Resources:
       RetentionInDays: 14
 
   # 失敗が続いたら気づけるようにしておく(無料枠内)
-  # 120分間隔なので、3回失敗＝6時間止まっている。評価期間もそれに合わせる。
+  # 60分間隔なので、3回失敗＝3時間止まっている。評価期間もそれに合わせる。
   ErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -160,7 +160,7 @@ Resources:
         - Name: FunctionName
           Value: !Ref CollectorFunction
       Statistic: Sum
-      Period: 21600
+      Period: 14400
       EvaluationPeriods: 1
       Threshold: 3
       ComparisonOperator: GreaterThanOrEqualToThreshold
